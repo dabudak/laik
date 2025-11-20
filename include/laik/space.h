@@ -505,8 +505,17 @@ Laik_Partitioner* laik_new_block_partitioner(int pdim, int cycles,
                                              Laik_GetTaskWeight_t tfunc,
                                              const void* userData);
 
+Laik_Partitioner* laik_new_var_block_partitioner(int pdim, int cycles,
+                                             Laik_GetIdxWeight_t ifunc,
+                                             Laik_GetTaskWeight_t tfunc,
+                                             const void* userData);
+
+
 // block partitioner for 1d space without weighting
 Laik_Partitioner* laik_new_block_partitioner1(void);
+
+Laik_Partitioner* laik_new_var_block_partitioner1(void);
+
 // block partitioner for 1d space with index-wise weighting
 Laik_Partitioner* laik_new_block_partitioner_iw1(Laik_GetIdxWeight_t f,
                                                  const void* userData);

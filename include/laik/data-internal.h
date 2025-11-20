@@ -124,6 +124,9 @@ struct _Laik_Data {
 
     // statistics
     Laik_SwitchStat* stat;
+
+    // custom parameters
+    Laik_Data_Parameters* params;
 };
 
 

@@ -621,6 +621,102 @@ void runBlockPartitioner(Laik_RangeReceiver* r, Laik_PartitionerParams* p)
     laik_append_range(r, task, &range, 0, 0);
 }
 
+void runOverlappingBlockPartitioner(Laik_RangeReceiver* r, Laik_PartitionerParams* p)
+{
+    Laik_BlockPartitionerData* data;
+    data = (Laik_BlockPartitionerData*) p->partitioner->data;
+    assert(data);
+    Laik_Space* s = p->space;
+    Laik_Range range = s->range;
+
+    int count = p->group->size;
+    int pdim = data->pdim;
+    int64_t size = s->range.to.i[pdim] - s->range.from.i[pdim];
+    assert(size > 0);
+
+    Laik_Index idx;
+    double totalW;
+    if (data && data->getIdxW) {
+        // element-wise weighting
+        totalW = 0.0;
+        laik_index_init(&idx, 0, 0, 0);
+        for(int64_t i = 0; i < size; i++) {
+            idx.i[pdim] = i + s->range.from.i[pdim];
+            totalW += (data->getIdxW)(&idx, data->userData);
+        }
+    }
+    else {
+        // without weighting function, use weight 1 for every index
+        totalW = (double) size;
+    }
+
+    double totalTW = 0.0;
+    if (data && data->getTaskW) {
+        // task-wise weighting
+        totalTW = 0.0;
+        for(int task = 0; task < count; task++)
+            totalTW += (data->getTaskW)(task, data->userData);
+    }
+    else {
+        // without task weighting function, use weight 1 for every task
+        totalTW = (double) count;
+    }
+
+    int cycles = data ? data->cycles : 1;
+    double perPart = totalW / count / cycles;
+    double w = -0.5;
+    int task = 0;
+    int cycle = 0;
+
+    // taskW is a correction factor, which is 1.0 without task weights
+    double taskW;
+    if (data && data->getTaskW)
+        taskW = (data->getTaskW)(task, data->userData)
+                * ((double) count) / totalTW;
+    else
+        taskW = 1.0;
+
+    range.from.i[pdim] = s->range.from.i[pdim];
+    for(int64_t i = 0; i < size; i++) {
+        if (data && data->getIdxW) {
+            idx.i[pdim] = i + s->range.from.i[pdim];
+            w += (data->getIdxW)(&idx, data->userData);
+        }
+        else
+            w += 1.0;
+
+        while (w >= perPart * taskW) {
+            w = w - (perPart * taskW);
+
+            // If this would have been the last slice overall, stop here.
+            if ((task+1 == count) && (cycle+1 == cycles)) break;
+
+            int64_t cut = i + s->range.from.i[pdim];
+
+            // Right-overlap by +1 for all non-final slices; clamp to space end
+            int64_t to_with_overlap = cut + 1;
+            if (to_with_overlap > s->range.to.i[pdim]) {
+                to_with_overlap = s->range.to.i[pdim];
+            }
+
+            range.to.i[pdim] = to_with_overlap;
+            if (range.from.i[pdim] < range.to.i[pdim]) {
+                laik_append_range(r, task, &range, 0, 0);
+            }
+
+            task++;
+            if (task == count) { task = 0; cycle++; }
+
+            // next block starts at the original cut
+            range.from.i[pdim] = cut;
+        }   
+        if ((task+1 == count) && (cycle+1 == cycles)) break;
+    }
+    assert((task+1 == count) && (cycle+1 == cycles));
+    range.to.i[pdim] = s->range.to.i[pdim];
+    laik_append_range(r, task, &range, 0, 0);
+}
+
 
 Laik_Partitioner* laik_new_block_partitioner(int pdim, int cycles,
                                              Laik_GetIdxWeight_t ifunc,
@@ -641,6 +737,32 @@ Laik_Partitioner* laik_new_block_partitioner(int pdim, int cycles,
     data->getTaskW = tfunc;
 
     return laik_new_partitioner("block", runBlockPartitioner, data, 0);
+}
+
+Laik_Partitioner* laik_new_var_block_partitioner(int pdim, int cycles,
+                                             Laik_GetIdxWeight_t ifunc,
+                                             Laik_GetTaskWeight_t tfunc,
+                                             const void* userData)
+{
+    Laik_BlockPartitionerData* data;
+    data = malloc(sizeof(Laik_BlockPartitionerData));
+    if (!data) {
+        laik_panic("Out of memory allocating Laik_BlockPartitionerData object");
+        exit(1); // not actually needed, laik_panic never returns
+    }
+
+    data->pdim = pdim;
+    data->cycles = cycles;
+    data->getIdxW = ifunc;
+    data->userData = userData;
+    data->getTaskW = tfunc;
+
+    return laik_new_partitioner("var_block", runOverlappingBlockPartitioner, data, 0);
+}
+
+Laik_Partitioner* laik_new_var_block_partitioner1()
+{
+    return laik_new_var_block_partitioner(0, 1, 0, 0, 0);
 }
 
 Laik_Partitioner* laik_new_block_partitioner1()
