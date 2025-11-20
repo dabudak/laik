@@ -218,7 +218,7 @@ unsigned int laik_layout_unpack_gen(Laik_Mapping* m, Laik_Range* range,
 }
 
 // placeholder for "describe" function of layout interface if not implemented
-static
+
 char* laik_layout_describe_gen(Laik_Layout* l)
 {
     static char s[100];

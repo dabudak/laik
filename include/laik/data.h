@@ -368,6 +368,8 @@ void laik_layout_copy_gen(Laik_Range* range,
 // with innermost dim x, then y, z, fully covering given ranges
 Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges);
 
+Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges);
+
 // return stride for dimension <d> in lex layout mapping <n>
 uint64_t laik_layout_lex_stride(Laik_Layout* l, int n, int d);
 
@@ -415,6 +417,8 @@ void laik_set_allocator(Laik_Data* d, Laik_Allocator* alloc);
 Laik_Allocator* laik_get_allocator(Laik_Data* d);
 // returns an allocator with default policy LAIK_MP_NewAllocOnRepartition
 Laik_Allocator* laik_new_allocator_def();
+
+void laik_layout_variable_attach(Laik_Data* owner, Laik_Data* row_data);
 
 // predefined allocator
 extern Laik_Allocator *laik_allocator_def;

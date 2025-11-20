@@ -156,6 +156,7 @@ void laik_switchstat_free(Laik_SwitchStat* ss, uint64_t bytes)
 
 static int data_id = 0;
 
+// write a function named set_layout_factory
 Laik_Data* laik_new_data(Laik_Space* space, Laik_Type* type)
 {
     Laik_Data* d = malloc(sizeof(Laik_Data));
@@ -181,6 +182,8 @@ Laik_Data* laik_new_data(Laik_Space* space, Laik_Type* type)
     d->layout_factory = laik_new_layout_lex; // by default, use lex layouts
     d->stat = laik_newSwitchStat();
 
+    d->var_rowD = 0;
+    
     d->activeReservation = 0;
     d->map0_base = 0;
     d->map0_size = 0;
@@ -372,6 +375,8 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
 
     // create layout
     Laik_Range* ranges = coveringRanges(n, list, myid);
+
+    // add another parameters struct parameter to the layout_factory.
     Laik_Layout* layout = (n>0) ? (d->layout_factory)(n, ranges) : 0;
 
     Laik_MappingList* ml = laik_mappinglist_new(d, n, layout);
@@ -504,9 +509,11 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     if (m->base) return;
     if (m->count == 0) return;
     Laik_Data* d = m->data;
-
+    Laik_Layout* l = m->layout;
     // number of bytes to allocate: no space around required indexes
-    uint64_t size = m->count * d->elemsize;
+    // uint64_t size = m->count * d->elemsize;
+    Laik_Range requiredRange = m->requiredRange;
+    uint64_t size = (l -> offset(l, m->layoutSection, &requiredRange.to) - l -> offset(l, m->layoutSection, &requiredRange.from)) * d->elemsize;
     laik_switchstat_malloc(ss, size);
 
     // use the allocator of the mapping

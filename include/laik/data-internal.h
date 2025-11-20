@@ -124,6 +124,7 @@ struct _Laik_Data {
 
     // statistics
     Laik_SwitchStat* stat;
+    struct _Laik_Data* var_rowD;
 };
 
 

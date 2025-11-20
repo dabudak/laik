@@ -1,3 +1,4 @@
+ 
 /* This file is part of the LAIK parallel container library.
  * Copyright (c) 2017 Josef Weidendorfer
  *
@@ -24,31 +25,19 @@
 #include <stdlib.h>
 #include <assert.h>
 
+Laik_Layout*     laik_new_layout_variable(int n, Laik_Range* ranges);
+Laik_Partitioner* laik_new_var_block_partitioner1(void);
+
+void laik_layout_variable_attach(Laik_Data* owner, Laik_Data* row_data);
+
 // maximal size
 #define MAXSIZE 10000
 
-typedef struct _SpM SpM;
-struct _SpM {
-    int rows, cols;
-    int elems;
-    int row[MAXSIZE+1];
-    int* col;
-    double* val;
-};
-
-// for element-wise weighted partitioning: number of elems in row
-double getEW(Laik_Index* i, const void* d)
-{
-    SpM* m = (SpM*) d;
-    int ii = i->i[0];
-
-    return (double) (m->row[ii + 1] - m->row[ii]);
-}
-
 int main(int argc, char* argv[])
 {
-    Laik_Instance* inst = laik_init(&argc, &argv);
-    Laik_Group* world = laik_world(inst);
+    Laik_Instance* inst  = laik_init(&argc, &argv);
+    Laik_Group*    world = laik_world(inst);
+    int rank = laik_myid(world);
 
     int size = 0;
     if (argc > 1) size = atoi(argv[1]);
@@ -56,89 +45,158 @@ int main(int argc, char* argv[])
 
     laik_set_phase(inst, 0, "init", NULL);
 
-    // generate diagonal matrix in CSR format
-    SpM* m = malloc(sizeof(SpM));
-    m->rows  = size;
-    m->cols  = size;
-    m->elems = (m->rows-1) * m->cols / 2;
-    m->col   = malloc(sizeof(int) * m->elems);
-    m->val   = malloc(sizeof(double) * m->elems);
-    int r, off = 0;
-    for(r = 0; r < size; r++) {
-        m->row[r] = off;
-        for(int c = 0; c < r; c++) {
-            m->col[off] = c;
-            m->val[off] = (double) (size - r);
-            off++;
+    // rowD is CSR row-pointer(prefix)
+    Laik_Space* prefix_space = laik_new_space_1d(inst, size + 1);
+    Laik_Data*  rowD = laik_new_data(prefix_space, laik_Int64);
+
+    // valD / colD live on "rows" space (size). variable layout will map rows->nnz.
+    Laik_Space* rows_space = laik_new_space_1d(inst, size);
+    Laik_Data*  valD = laik_new_data(rows_space, laik_Double);
+    Laik_Data*  colD = laik_new_data(rows_space, laik_Int64);
+
+    laik_data_set_layout_factory(valD, laik_new_layout_variable);
+    laik_data_set_layout_factory(colD, laik_new_layout_variable);
+
+    // keep everything on master initially so master process can initialize.
+    Laik_Partitioner* master_pr = laik_new_master_partitioner();
+
+    Laik_Partitioning* row_master_p = laik_new_partitioning(master_pr, world, prefix_space, 0);
+    laik_switchto_partitioning(rowD, row_master_p, LAIK_DF_None, LAIK_RO_None);
+
+    Laik_Partitioning* val_master_p = laik_new_partitioning(master_pr, world, rows_space, 0);
+    laik_switchto_partitioning(valD, val_master_p, LAIK_DF_None, LAIK_RO_None);
+    laik_layout_variable_attach(valD, rowD);
+
+    Laik_Partitioning* col_master_p = laik_new_partitioning(master_pr, world, rows_space, 0);
+    laik_switchto_partitioning(colD, col_master_p, LAIK_DF_None, LAIK_RO_None);
+    laik_layout_variable_attach(colD, rowD);
+
+    // master initializes row-pointer, then val/col
+    if (rank == 0) {
+        // fill row prefix
+        int64_t* rp = NULL; uint64_t rp_len = 0;
+        laik_get_map_1d(rowD, 0, (void**)&rp, &rp_len);
+        assert(rp_len == (uint64_t)(size + 1));
+
+        int off = 0;
+        for (int r = 0; r < size; ++r) {
+            rp[r] = off;
+            off  += r;
         }
+        rp[size] = off;  // total nnz
+
+        int64_t* col = NULL; uint64_t col_len = 0;
+        double*  val = NULL; uint64_t val_len = 0;
+        laik_get_map_1d(colD, 0, (void**)&col, &col_len);
+        laik_get_map_1d(valD, 0, (void**)&val, &val_len);
+
+        const int nnz = (int)rp[size];
+        assert((int)col_len == nnz && (int)val_len == nnz);
+
+        off = 0;
+        for (int r = 0; r < size; ++r) {
+            for (int c = 0; c < r; ++c) {
+                col[off] = c;
+                val[off] = (double)(size - r);
+                ++off;
+            }
+        }
+        assert(off == nnz);
     }
-    m->row[r] = off;
-    assert(m->elems == off);
 
-    // global vector
-    double* v = malloc(sizeof(double) * size);
-    for(int i = 0; i < size; i++)
-        v[i] = (double) (i + 1);
 
-    // 1d space for matrix rows and vector <res>
-    Laik_Space* s = laik_new_space_1d(inst, size);
-    // result vector
-    Laik_Data* resD = laik_new_data(s, laik_Double);
+    // repartition everything for computation
 
-    // block partitioning according to elems in matrix rows
-    Laik_Partitioner* pr = laik_new_block_partitioner1();
-    laik_set_index_weight(pr, getEW, m);
-    Laik_Partitioning* p = laik_new_partitioning(pr, world, s, 0);
-    laik_switchto_partitioning(resD, p, LAIK_DF_None, LAIK_RO_None);
+    Laik_Partitioner* rows_var_pr = laik_new_var_block_partitioner1();
+    Laik_Partitioning* row_var_p  = laik_new_partitioning(rows_var_pr, world, prefix_space, 0);
+    laik_switchto_partitioning(rowD, row_var_p, LAIK_DF_Preserve, LAIK_RO_None);
 
-    double* res;
-    uint64_t count;
-    int64_t fromRow, toRow;
+    Laik_Partitioner* blk_pr      = laik_new_block_partitioner1();
+    Laik_Partitioning* val_blk_p  = laik_new_partitioning(blk_pr, world, rows_space, 0);
+    Laik_Partitioning* col_blk_p  = laik_new_partitioning(blk_pr, world, rows_space, 0);
 
-    // do SPMV, first time
+    laik_switchto_partitioning(valD, val_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
+    laik_layout_variable_attach(valD, rowD);
 
+    laik_switchto_partitioning(colD, col_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
+    laik_layout_variable_attach(colD, rowD);
+
+    double* v = (double*)malloc(sizeof(double) * size);
+    for (int i = 0; i < size; ++i) v[i] = (double)(i + 1);
+
+    Laik_Data*        resD      = laik_new_data(rows_space, laik_Double);
+    Laik_Partitioning* res_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
+    laik_switchto_partitioning(resD, res_blk_p, LAIK_DF_None, LAIK_RO_None);
+
+    // SPMV #1: compute + gather to master
     laik_set_phase(inst, 1, "1st SpmV", NULL);
-    // init result vector (only my partition)
-    laik_get_map_1d(resD, 0, (void**) &res, &count);
-    for(uint64_t i = 0; i < count; i++)
-        res[i] = 0.0;
-    // SPMV on my part of matrix rows
-    laik_my_range_1d(p, 0, &fromRow, &toRow);
-    for(int r = fromRow; r < toRow; r++) {
-        for(int o = m->row[r]; o < m->row[r+1]; o++)
-            res[r - fromRow] += m->val[o] * v[m->col[o]];
-        laik_set_iteration(inst, r - fromRow);
+
+    double*  res    = NULL;
+    uint64_t rcount = 0;
+    laik_get_map_1d(resD, 0, (void**)&res, &rcount);
+    for (uint64_t i = 0; i < rcount; ++i) res[i] = 0.0;
+
+    int64_t fromRow = 0, toRow = 0;
+    laik_my_range_1d(res_blk_p, 0, &fromRow, &toRow);
+
+    // local slices
+    const int64_t* row_ptr = NULL; uint64_t rp_len = 0;
+    int64_t*       col     = NULL; uint64_t col_len = 0;
+    double*        val     = NULL; uint64_t val_len = 0;
+
+    laik_get_map_1d(rowD, 0, (void**)&row_ptr, &rp_len);
+    laik_get_map_1d(colD, 0, (void**)&col,     &col_len);
+    laik_get_map_1d(valD, 0, (void**)&val,     &val_len);
+
+    for (int r = (int)fromRow; r < (int)toRow; ++r) {
+        const int lr     = r - (int)fromRow;
+        const int64_t beg = row_ptr[lr];
+        const int64_t end = row_ptr[lr + 1];
+        for (int64_t o = beg; o < end; ++o) {
+            res[lr] += val[o] * v[col[o]];
+        }
+        laik_set_iteration(inst, lr);
     }
-    // push result to master
-    Laik_Partitioning* pMaster = laik_new_partitioning(laik_Master, world, s, 0);
+
+    Laik_Partitioning* pMaster = laik_new_partitioning(laik_Master, world, rows_space, 0);
     laik_switchto_partitioning(resD, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
-    if (laik_myid(world) == 0) {
-        laik_get_map_1d(resD, 0, (void**) &res, &count);
+    if (rank == 0) {
+        laik_get_map_1d(resD, 0, (void**)&res, &rcount);
         double sum = 0.0;
-        for(uint64_t i = 0; i < count; i++) sum += res[i];
+        for (uint64_t i = 0; i < rcount; ++i) sum += res[i];
         printf("Res sum (regular): %f\n", sum);
     }
 
+
+    // SPMV #2: reduction path
     laik_iter_reset(inst);
     laik_set_phase(inst, 2, "2nd SpmV", NULL);
 
-    // do SPMV, second time
-
-    // other way to push results to master: use sum reduction
-    Laik_Partitioning* pAll = laik_new_partitioning(laik_All, world, s, 0);
+    Laik_Partitioning* pAll = laik_new_partitioning(laik_All, world, rows_space, 0);
     laik_switchto_partitioning(resD, pAll, LAIK_DF_Init, LAIK_RO_Sum);
-    laik_get_map_1d(resD, 0, (void**) &res, &count);
-    laik_my_range_1d(p, 0, &fromRow, &toRow);
-    for(int r = fromRow; r < toRow; r++) {
-        for(int o = m->row[r]; o < m->row[r+1]; o++)
-            res[r] += m->val[o] * v[m->col[o]];
-        laik_set_iteration(inst, r - fromRow);
+
+    laik_get_map_1d(resD, 0, (void**)&res, &rcount);
+    laik_my_range_1d(res_blk_p, 0, &fromRow, &toRow);
+
+    laik_get_map_1d(rowD, 0, (void**)&row_ptr, &rp_len);
+    laik_get_map_1d(colD, 0, (void**)&col, &col_len);
+    laik_get_map_1d(valD, 0, (void**)&val, &val_len);
+
+    for (int r = (int)fromRow; r < (int)toRow; ++r) {
+        const int lr     = r - (int)fromRow;
+        const int64_t beg = row_ptr[lr];
+        const int64_t end = row_ptr[lr + 1];
+        for (int64_t o = beg; o < end; ++o) {
+            res[r] += val[o] * v[col[o]];
+        }
+        laik_set_iteration(inst, lr);
     }
+
     laik_switchto_partitioning(resD, pMaster, LAIK_DF_Preserve, LAIK_RO_Sum);
-    if (laik_myid(world) == 0) {
-        laik_get_map_1d(resD, 0, (void**) &res, &count);
+    if (rank == 0) {
+        laik_get_map_1d(resD, 0, (void**)&res, &rcount);
         double sum = 0.0;
-        for(uint64_t i = 0; i < count; i++) sum += res[i];
+        for (uint64_t i = 0; i < rcount; ++i) sum += res[i];
         printf("Res sum (reduce): %f\n", sum);
     }
 
