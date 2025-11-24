@@ -97,8 +97,14 @@ Laik_Partitioning* laik_data_get_partitioning(Laik_Data* d);
 // free resources for a data container
 void laik_free(Laik_Data*);
 
+typedef struct _Laik_Data_Parameters {
+    Laik_Data* prefix_row_data; // CSR row-pointer (size+1), used by variable layout
+} Laik_Data_Parameters;
+
+void laik_data_attach_params(Laik_Data* d, Laik_Data_Parameters* params);
+
 // type for layout factory: create new layout, given <n> ranges to cover
-typedef Laik_Layout* (*laik_layout_factory_t)(int n, Laik_Range*);
+typedef Laik_Layout* (*laik_layout_factory_t)(int n, Laik_Range*, Laik_Data_Parameters* params);
 
 // change layout factory to use for generating mapping layouts
 void laik_data_set_layout_factory(Laik_Data* d, laik_layout_factory_t);
@@ -366,9 +372,9 @@ void laik_layout_copy_gen(Laik_Range* range,
 
 // create layout object for 1d/2d/3d lexicographical layout
 // with innermost dim x, then y, z, fully covering given ranges
-Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges);
+Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges, Laik_Data_Parameters* params);
 
-Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges);
+Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Parameters* params);
 
 // return stride for dimension <d> in lex layout mapping <n>
 uint64_t laik_layout_lex_stride(Laik_Layout* l, int n, int d);
@@ -417,8 +423,6 @@ void laik_set_allocator(Laik_Data* d, Laik_Allocator* alloc);
 Laik_Allocator* laik_get_allocator(Laik_Data* d);
 // returns an allocator with default policy LAIK_MP_NewAllocOnRepartition
 Laik_Allocator* laik_new_allocator_def();
-
-void laik_layout_variable_attach(Laik_Data* owner, Laik_Data* row_data);
 
 // predefined allocator
 extern Laik_Allocator *laik_allocator_def;

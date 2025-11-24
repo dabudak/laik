@@ -106,7 +106,7 @@ int64_t offset_lex(Laik_Layout* l, int n, Laik_Index* idx)
             off += (idx->i[2] - e->range.from.i[2]) * e->stride[2];
         }
     }
-    assert((off >= 0) && (off < (int64_t) e->count));
+    assert((off >= 0) && (off <= (int64_t) e->count));
     return off;
 }
 
@@ -480,7 +480,7 @@ unsigned int unpack_lex(Laik_Mapping* m, Laik_Range* s,
 
 
 // create layout for lexicographical layout covering <n> ranges
-Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges)
+Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges, Laik_Data_Parameters* params)
 {
     int dims = ranges->space->dims;
     Laik_Layout_Lex* l = malloc(sizeof(Laik_Layout_Lex) + n * sizeof(Lex_Entry));

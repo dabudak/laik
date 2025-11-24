@@ -30,6 +30,9 @@
 // provided allocators
 Laik_Allocator *laik_allocator_def = 0;
 
+extern struct Laik_Layout_Var;
+extern uint64_t laik_variable_layout_map_nnz(Laik_Layout* l, int mapNo);        
+extern struct Laik_Layout_Var* laik_is_layout_variable(Laik_Layout* l);
 
 // initialize the LAIK data module, called from laik_new_instance
 void laik_data_init()
@@ -181,8 +184,6 @@ Laik_Data* laik_new_data(Laik_Space* space, Laik_Type* type)
     d->allocator = laik_allocator_def; // malloc/free + reuse if possible
     d->layout_factory = laik_new_layout_lex; // by default, use lex layouts
     d->stat = laik_newSwitchStat();
-
-    d->var_rowD = 0;
     
     d->activeReservation = 0;
     d->map0_base = 0;
@@ -197,6 +198,12 @@ Laik_Data* laik_new_data(Laik_Space* space, Laik_Type* type)
     laik_addDataForInstance(space->inst, d);
 
     return d;
+}
+
+void laik_data_attach_params(Laik_Data* d, Laik_Data_Parameters* params)
+{
+    assert(d);
+    d->params = params;
 }
 
 Laik_Data* laik_new_data_1d(Laik_Instance* i, Laik_Type* t, int64_t s1)
@@ -376,9 +383,8 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
     // create layout
     Laik_Range* ranges = coveringRanges(n, list, myid);
 
-    // add another parameters struct parameter to the layout_factory.
-    Laik_Layout* layout = (n>0) ? (d->layout_factory)(n, ranges) : 0;
-
+    // add another parameters struct parameter to the layout_factory
+    Laik_Layout* layout = (n>0) ? (d->layout_factory)(n, ranges, d->params) : 0;
     Laik_MappingList* ml = laik_mappinglist_new(d, n, layout);
 
     for(int mapNo = 0; mapNo < n; mapNo++) {
@@ -388,6 +394,9 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
         m->layout = layout;       // all maps use same layout
         m->layoutSection = mapNo; // but different sections of it
 
+       if (laik_is_layout_variable(m->layout)) {
+            m->count = laik_variable_layout_map_nnz(layout, mapNo);
+        }
         if ((mapNo == 0) && (d->map0_base != 0)) {
             laik_log(1, "  using provided memory (%lld bytes at %p with layout %s)",
                      (unsigned long long int) d->map0_size, d->map0_base,
@@ -483,7 +492,9 @@ void laik_map_set_allocation(Laik_Mapping* m,
     assert(m->base == 0);
 
     // count should be number of indexes in required range
-    assert(m->count == laik_range_size(&(m->requiredRange)));
+    if (!laik_is_layout_variable(m->layout)) {
+        assert(m->count == laik_range_size(&(m->requiredRange)));
+    }
     // make sure provided memory buffer is large enough
     assert(size >=  m->count * m->data->elemsize);
 
@@ -505,7 +516,6 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
 {
     // should only be called if not embedded in another mapping
     assert(m->baseMapping == 0);
-
     if (m->base) return;
     if (m->count == 0) return;
     Laik_Data* d = m->data;
@@ -513,7 +523,25 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     // number of bytes to allocate: no space around required indexes
     // uint64_t size = m->count * d->elemsize;
     Laik_Range requiredRange = m->requiredRange;
-    uint64_t size = (l -> offset(l, m->layoutSection, &requiredRange.to) - l -> offset(l, m->layoutSection, &requiredRange.from)) * d->elemsize;
+    // Compute offsets once
+    int64_t offFrom = l->offset(l, m->layoutSection, &requiredRange.from);
+    int64_t offTo   = l->offset(l, m->layoutSection, &requiredRange.to);
+
+    uint64_t size = (uint64_t)(offTo - offFrom) * d->elemsize;
+
+    // Debug print
+    fprintf(stderr,
+            "DEBUG allocateMap: data=%s mapNo=%d "
+            "range=[%lld,%lld) offFrom=%lld offTo=%lld "
+            "count=%llu elemsize=%u sizeBytes=%llu\n",
+            d->name, m->mapNo,
+            (long long)requiredRange.from.i[0],
+            (long long)requiredRange.to.i[0],
+            (long long)offFrom,
+            (long long)offTo,
+            (unsigned long long)m->count,
+            d->elemsize,
+            (unsigned long long)size);
     laik_switchstat_malloc(ss, size);
 
     // use the allocator of the mapping
@@ -1147,7 +1175,7 @@ void laik_reservation_alloc(Laik_Reservation* res)
         m->count = count;
 
         // generate layout using layout factory given in data object
-        m->layout = (data->layout_factory)(1, range);
+        m->layout = (data->layout_factory)(1, range, data->params);
         m->layoutSection = 0;
 
         laik_allocateMap(m, data->stat);
