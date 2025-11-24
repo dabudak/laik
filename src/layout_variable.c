@@ -39,15 +39,12 @@ struct _Laik_Layout_Var {
 // interface implementation of variable layout
 //
 
-uint64_t laik_variable_layout_map_nnz(Laik_Layout* l, int mapNo)
-{
-    Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
-    assert(mapNo >= 0 && mapNo < l->map_count);
-    return vl->e[mapNo].nnz;
-}
 
-// forward decl
+// forward decls
 static int64_t offset_variable(Laik_Layout* l, int n, Laik_Index* idx);
+static int section_variable(Laik_Layout* l, Laik_Index* idx);
+static int  mapno_variable(Laik_Layout* l, int n);
+static bool reuse_variable(Laik_Layout* l, int n, Laik_Layout* o, int no);
 
 // return lex layout if given layout is a lexicographical layout
 Laik_Layout_Var* laik_is_layout_variable(Laik_Layout* l)
@@ -58,31 +55,122 @@ Laik_Layout_Var* laik_is_layout_variable(Laik_Layout* l)
     return 0; // not a lexicographical layout
 }
 
-// ...existing code...
+uint64_t laik_variable_layout_map_nnz(Laik_Layout* l, int mapNo)
+{
+    Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
+    assert(mapNo >= 0 && mapNo < l->map_count);
+    return vl->e[mapNo].nnz;
+}
+
+
+static char* describe_variable(Laik_Layout* l) {
+    (void)l;
+    return (char*)"variable";
+}
+
+// helper: nnz in row (li -> li+1)
+static inline uint64_t var_row_nnz(const Var_Entry* e, int64_t li)
+{
+    return (uint64_t)(e->row_ptr[li+1] - e->row_ptr[li]);
+}
+
+// pack exactly one row (or as many as fit) treating each logical element as a row
+static
+unsigned int pack_variable(Laik_Mapping* m, Laik_Range* range,
+                           Laik_Index* idx, char* buf, unsigned int size)
+{
+    Laik_Layout_Var* vl = (Laik_Layout_Var*) m->layout;
+    Var_Entry* e = &vl->e[m->layoutSection];
+
+    int64_t g_from = range->from.i[0];
+    int64_t g_to   = range->to.i[0];          // exclusive row end
+    int64_t first  = e->first_boundary;
+    int64_t li_from = g_from - first;
+    int64_t li_to   = g_to   - first;
+
+    unsigned int used = 0;
+    while (li_from < li_to) {
+        uint64_t nnz_row = var_row_nnz(e, li_from);
+        uint64_t bytes_row = nnz_row * m->data->elemsize;
+        if (used + bytes_row > size) break;   // not enough buffer for next row
+        int64_t off = (int64_t)(e->row_ptr[li_from] - e->row_ptr[0]);
+        memcpy(buf + used, m->start + off * m->data->elemsize, bytes_row);
+        used += (unsigned int)bytes_row;
+        li_from++;
+    }
+
+    // advance idx to global row after last packed row
+    idx->i[0] = first + li_from;
+    // return number of rows packed
+    return (unsigned int)(li_from - (g_from - first));
+}
+
+// unpack rows (mirror of pack)
+static
+unsigned int unpack_variable(Laik_Mapping* m, Laik_Range* range,
+                             Laik_Index* idx, char* buf, unsigned int size)
+{
+    Laik_Layout_Var* vl = (Laik_Layout_Var*) m->layout;
+    Var_Entry* e = &vl->e[m->layoutSection];
+
+    int64_t g_from = range->from.i[0];
+    int64_t g_to   = range->to.i[0];
+    int64_t first  = e->first_boundary;
+    int64_t li_from = g_from - first;
+    int64_t li_to   = g_to   - first;
+
+    unsigned int used = 0;
+    while (li_from < li_to) {
+        uint64_t nnz_row = var_row_nnz(e, li_from);
+        uint64_t bytes_row = nnz_row * m->data->elemsize;
+        if (used + bytes_row > size) break;
+        int64_t off = (int64_t)(e->row_ptr[li_from] - e->row_ptr[0]);
+        memcpy(m->start + off * m->data->elemsize, buf + used, bytes_row);
+        used += (unsigned int)bytes_row;
+        li_from++;
+    }
+
+    idx->i[0] = first + li_from;
+    return (unsigned int)(li_from - (g_from - first));
+}
+
+// copy rows range (variable span)
+static
+void copy_variable(Laik_Range* range, Laik_Mapping* from, Laik_Mapping* to)
+{
+    Laik_Layout_Var* vlf = (Laik_Layout_Var*) from->layout;
+    Var_Entry* ef = &vlf->e[from->layoutSection];
+    Laik_Layout_Var* vlt = (Laik_Layout_Var*) to->layout;
+    Var_Entry* et = &vlt->e[to->layoutSection];
+
+    int64_t g_from = range->from.i[0];
+    int64_t g_to   = range->to.i[0];
+    int64_t li_f = g_from - ef->first_boundary;
+    int64_t li_t = g_from - et->first_boundary;
+    while (g_from < g_to) {
+        uint64_t nnz_row = (uint64_t)(ef->row_ptr[li_f+1] - ef->row_ptr[li_f]);
+        int64_t off_src = (int64_t)(ef->row_ptr[li_f] - ef->row_ptr[0]);
+        int64_t off_dst = (int64_t)(et->row_ptr[li_t] - et->row_ptr[0]);
+        uint64_t bytes = nnz_row * from->data->elemsize;
+        memcpy(to->start + off_dst * to->data->elemsize,
+               from->start + off_src * from->data->elemsize,
+               bytes);
+        g_from++;
+        li_f++; li_t++;
+    }
+}
+
 static int section_variable(Laik_Layout* l, Laik_Index* idx) {
-    // 1D: determine which map (section) contains global index idx->i[0].
     Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
     int64_t g = idx->i[0];
-
     for (int sec = 0; sec < l->map_count; ++sec) {
         int64_t start = vl->e[sec].first_boundary;
-        int64_t end;
-
-        if (sec < l->map_count - 1) {
-            // Next map’s first_boundary is the exclusive end of this one
-            end = vl->e[sec + 1].first_boundary;
-        }
-        else {
-            // Last map: reconstruct end from its own prefix slice length
-            // count = (to - from)   OR (to - from + 1) depending on construction rule.
-            // We stored first_boundary = from; original 'to' = from + (count) for last map.
-            end = start + (int64_t)vl->e[sec].count;
-        }
-
-        if (g >= start && g < end)
-            return sec;
+        int64_t end   = (sec < l->map_count - 1)
+                      ? vl->e[sec + 1].first_boundary
+                      : start + (int64_t)vl->e[sec].count - 1; // rows = count-1
+        if (g >= start && g < end) return sec;
     }
-    return -1; // not found
+    return -1;
 }
 
 static int mapno_variable(Laik_Layout* l, int n) { 
@@ -119,7 +207,6 @@ extern int laik_layout_pack_gen(Laik_Mapping* m, Laik_Range* r, Laik_Index* idx,
 extern char* laik_layout_describe_gen(Laik_Layout* l);
 extern int laik_layout_unpack_gen(Laik_Mapping* m, Laik_Range* r, Laik_Index* idx, char* buf, unsigned int size);
 
-// ...existing code...
 Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Parameters* params)
 {
     assert(params && params->prefix_row_data);
@@ -139,10 +226,10 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
                      mapno_variable,
                      offset_variable,
                      reuse_variable,
-                     laik_layout_describe_gen,
-                     laik_layout_pack_gen,
-                     laik_layout_unpack_gen,
-                     laik_layout_copy_gen);
+                     describe_variable,      // use variable descriptor
+                     pack_variable,          // variable-specific pack
+                     unpack_variable,        // variable-specific unpack
+                     copy_variable);
 
     vl->e = (Var_Entry*) calloc(n, sizeof(Var_Entry));
     assert(vl->e);

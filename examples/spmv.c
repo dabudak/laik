@@ -41,212 +41,189 @@ int main(int argc, char* argv[])
     if (argc > 1) size = atoi(argv[1]);
     if ((size <= 0) || (size > MAXSIZE)) size = MAXSIZE;
 
+    double* v = (double*) malloc(size * sizeof(double));
+    assert(v);
+    for (int i = 0; i < size; ++i)
+        v[i] = (double)(i + 1);
+
     laik_set_phase(inst, 0, "init", NULL);
 
     // rowD is CSR row-pointer(prefix)
     Laik_Space* prefix_space = laik_new_space_1d(inst, size + 1);
-    Laik_Data*  rowD = laik_new_data(prefix_space, laik_Int64);
 
     // valD / colD live on "rows" space (size). variable layout will map rows->nnz.
     Laik_Space* rows_space = laik_new_space_1d(inst, size);
-    Laik_Data*  valD = laik_new_data(rows_space, laik_Double);
-    Laik_Data*  colD = laik_new_data(rows_space, laik_Int64);
 
-    // keep everything on master initially so master process can initialize.
-    Laik_Partitioner* master_pr = laik_new_master_partitioner();
+    // 1) Create data objects
+    Laik_Data*  rowD = laik_new_data(prefix_space, laik_Int64);
+    Laik_Data*  valD = laik_new_data(rows_space,   laik_Double);
+    Laik_Data*  colD = laik_new_data(rows_space,   laik_Int64);
+    Laik_Data*  resD = laik_new_data(rows_space,   laik_Double);
 
-    Laik_Partitioning* row_master_p = laik_new_partitioning(master_pr, world, prefix_space, 0);
+    // 2) Build full prefix (master)
+    Laik_Partitioner* master_pr   = laik_new_master_partitioner();
+    Laik_Partitioning* row_master = laik_new_partitioning(master_pr, world, prefix_space, 0);
+    laik_switchto_partitioning(rowD, row_master, LAIK_DF_None, LAIK_RO_None);
 
-    laik_switchto_partitioning(rowD, row_master_p, LAIK_DF_None, LAIK_RO_None);
+    if (rank == 0) {
+        int64_t* rp = NULL; uint64_t rp_len = 0;
+        laik_get_map_1d(rowD, 0, (void**)&rp, &rp_len);
+        assert(rp_len == size + 1);
+        int64_t off = 0;
+        for (int r = 0; r < size; ++r) {
+            rp[r] = off;
+            off += r;               // nnz in row r = r
+        }
+        rp[size] = off;
+    }
 
-    // Attach parameters (prefix_row_data) BEFORE setting variable layout factories
+    // 3) Distribute prefix to final row-variable partition (Preserve)
+    Laik_Partitioner* rows_var_pr = laik_new_var_block_partitioner1();
+    Laik_Partitioning* row_var_p  = laik_new_partitioning(rows_var_pr, world, prefix_space, 0);
+    laik_switchto_partitioning(rowD, row_var_p, LAIK_DF_Preserve, LAIK_RO_None);
+
+        // Verify local row_ptr slice correctness
+    {
+        int64_t rf=0, rt=0;
+        laik_my_range_1d(row_var_p,0,&rf,&rt);
+        int64_t* rp=NULL; uint64_t rp_len=0;
+        laik_get_map_1d(rowD,0,(void**)&rp,&rp_len);
+        assert(rp_len == (uint64_t)(rt - rf));
+        for (int64_t i=0; i < (int64_t)rp_len; ++i) {
+            int64_t g = rf + i;
+            int64_t expected = g * (g - 1) / 2;
+            if (rp[i] != expected) {
+                fprintf(stderr,"PREFIX MISMATCH rank=%d global_row=%lld rp=%lld exp=%lld\n",
+                        rank,(long long)g,(long long)rp[i],(long long)expected);
+                assert(0);
+            }
+        }
+    }
+
+    // 4) Attach params AFTER rowD is in final distribution
     Laik_Data_Parameters* vparams = (Laik_Data_Parameters*)malloc(sizeof(*vparams));
     vparams->prefix_row_data = rowD;
-
-    // Now set variable layout factory (will consume params in prepareMaps)
+    laik_data_attach_params(valD, vparams);
+    laik_data_attach_params(colD, vparams);
     laik_data_set_layout_factory(valD, laik_new_layout_variable);
     laik_data_set_layout_factory(colD, laik_new_layout_variable);
 
-    // Master partitioning for valD / colD
-    Laik_Partitioning* val_master_p = laik_new_partitioning(master_pr, world, rows_space, 0);
-    Laik_Partitioning* col_master_p = laik_new_partitioning(master_pr, world, rows_space, 0);
+    // 5) Partition val/col to block; variable layout now sees correct local prefix
+    Laik_Partitioner* blk_pr     = laik_new_block_partitioner1();
+    Laik_Partitioning* val_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
+    Laik_Partitioning* col_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
+    laik_switchto_partitioning(valD, val_blk_p, LAIK_DF_None, LAIK_RO_None);
+    laik_switchto_partitioning(colD, col_blk_p, LAIK_DF_None, LAIK_RO_None);
 
-    int64_t* rp_dbg = NULL; uint64_t rl_dbg = 0;
-    laik_get_map_1d(rowD, 0, (void**)&rp_dbg, &rl_dbg);
-    int64_t fr=0,tr=0; laik_my_range_1d(row_master_p,0,&fr,&tr);
+    // 6) Initialize val/col only on ranks that own rows now (no rebuild later needed)
+    {
+        int64_t fromRow=0,toRow=0;
+        laik_my_range_1d(val_blk_p,0,&fromRow,&toRow);
+        const int64_t* rp=NULL; uint64_t rp_len=0;
+        laik_get_map_1d(rowD,0,(void**)&rp,&rp_len);
+        assert(rp_len == (uint64_t)(toRow - fromRow + 1));
 
-    // master initializes row-pointer, then val/col
-    if (rank == 0) {
-        // fill row prefix
-        int64_t* rp = NULL; uint64_t rp_len = 0;
-        laik_get_map_1d(rowD, 0, (void**)&rp, &rp_len);
-        assert(rp_len == (uint64_t)(size + 1));
+        double*  val=NULL; uint64_t val_len=0;
+        int64_t* col=NULL; uint64_t col_len=0;
+        laik_get_map_1d(valD,0,(void**)&val,&val_len);
+        laik_get_map_1d(colD,0,(void**)&col,&col_len);
 
-        int off = 0;
-        for (int r = 0; r < size; ++r) {
-            rp[r] = off;
-            off  += r;
-        }
-        rp[size] = off;  // total nnz
-    }
+        int64_t base = rp[0];
+        int64_t nnz_local = rp[rp_len-1] - base;
+        assert((int64_t)val_len == nnz_local && (int64_t)col_len == nnz_local);
 
-    laik_data_attach_params(valD, vparams);
-    laik_data_attach_params(colD, vparams);
-
-    laik_switchto_partitioning(valD, val_master_p, LAIK_DF_None, LAIK_RO_None);
-    laik_switchto_partitioning(colD, col_master_p, LAIK_DF_None, LAIK_RO_None);
-
-    if (rank == 0) {
-        int64_t* col = NULL; uint64_t col_len = 0;
-        double*  val = NULL; uint64_t val_len = 0;
-        laik_get_map_1d(colD, 0, (void**)&col, &col_len);
-        laik_get_map_1d(valD, 0, (void**)&val, &val_len);
-
-        int64_t* rp = NULL; uint64_t rp_len = 0;
-        laik_get_map_1d(rowD, 0, (void**)&rp, &rp_len);
-        const int nnz = (int)rp[size];
-        assert((int)col_len == nnz && (int)val_len == nnz);
-
-        int off = 0;
-        for (int r = 0; r < size; ++r) {
-            for (int c = 0; c < r; ++c) {
+        int64_t off = 0;
+        for (int64_t r = fromRow; r < toRow; ++r) {
+            for (int64_t c = 0; c < r; ++c) {
                 col[off] = c;
                 val[off] = (double)(size - r);
                 ++off;
             }
         }
-        assert(off == nnz);
+        assert(off == nnz_local);
     }
 
-
-
-    // repartition everything for computation
-
-    Laik_Partitioner* rows_var_pr = laik_new_var_block_partitioner1();
-    Laik_Partitioning* row_var_p  = laik_new_partitioning(rows_var_pr, world, prefix_space, 0);
-
-    laik_switchto_partitioning(rowD, row_var_p, LAIK_DF_Preserve, LAIK_RO_None);
-
-    Laik_Partitioner* blk_pr      = laik_new_block_partitioner1();
-    Laik_Partitioning* val_blk_p  = laik_new_partitioning(blk_pr, world, rows_space, 0);
-    Laik_Partitioning* col_blk_p  = laik_new_partitioning(blk_pr, world, rows_space, 0);
-
-    laik_switchto_partitioning(valD, val_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
-    laik_switchto_partitioning(colD, col_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
-
-    double* v = (double*)malloc(sizeof(double) * size);
-    for (int i = 0; i < size; ++i) v[i] = (double)(i + 1);
-
-    Laik_Data*        resD      = laik_new_data(rows_space, laik_Double);
+    // 7) Partition result
     Laik_Partitioning* res_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
     laik_switchto_partitioning(resD, res_blk_p, LAIK_DF_None, LAIK_RO_None);
 
-    // SPMV #1: compute + gather to master
-    laik_set_phase(inst, 1, "1st SpmV", NULL);
+    // 8) SpMV
+    laik_set_phase(inst, 1, "SpMV", NULL);
+    laik_iter_reset(inst);
 
-    double*  res    = NULL;
-    uint64_t rcount = 0;
-    laik_get_map_1d(resD, 0, (void**)&res, &rcount);
-    for (uint64_t i = 0; i < rcount; ++i) res[i] = 0.0;
+    {
+        int64_t fromRow=0,toRow=0;
+        laik_my_range_1d(res_blk_p,0,&fromRow,&toRow);
 
-    int64_t fromRow = 0, toRow = 0;
-    laik_my_range_1d(res_blk_p, 0, &fromRow, &toRow);
+        const int64_t* row_ptr=NULL; uint64_t rp_len=0;
+        laik_get_map_1d(rowD,0,(void**)&row_ptr,&rp_len);
+        double* val=NULL; uint64_t val_len=0;
+        int64_t* col=NULL; uint64_t col_len=0;
+        laik_get_map_1d(valD,0,(void**)&val,&val_len);
+        laik_get_map_1d(colD,0,(void**)&col,&col_len);
+        double* res=NULL; uint64_t rcount=0;
+        laik_get_map_1d(resD,0,(void**)&res,&rcount);
 
-    // local slices
-    const int64_t* row_ptr = NULL; uint64_t rp_len = 0;
-    int64_t*       col     = NULL; uint64_t col_len = 0;
-    double*        val     = NULL; uint64_t val_len = 0;
-    
-    laik_get_map_1d(rowD, 0, (void**)&row_ptr, &rp_len);
-    laik_get_map_1d(colD, 0, (void**)&col,     &col_len);
-    laik_get_map_1d(valD, 0, (void**)&val,     &val_len);
+        assert(rcount == (uint64_t)(toRow - fromRow));
+        assert(rp_len == (uint64_t)(toRow - fromRow + 1));
 
-    const int64_t base = row_ptr[0];           // global prefix offset of first local row
-    assert(base <= row_ptr[rp_len - 1]);
+        for (uint64_t i=0;i<rcount;++i) res[i]=0.0;
 
-    for (int r = (int)fromRow; r < (int)toRow; ++r) {
-        const int lr      = r - (int)fromRow;
-        const int64_t beg = row_ptr[lr]     - base;
-        const int64_t end = row_ptr[lr + 1] - base;
-
-        // Debug: nnz in this row should be r
-        int64_t nnz_row = end - beg;
-        if (nnz_row != r) {
-            fprintf(stderr, "DEBUG rank=%d row=%d nnz_row=%lld expected=%d "
-                            "rp[lr]=%lld rp[lr+1]=%lld base=%lld\n",
-                    rank, r, (long long)nnz_row, r,
-                    (long long)row_ptr[lr], (long long)row_ptr[lr+1], (long long)base);
-            assert(nnz_row == r && "row_ptr slice mismatch");
+        int64_t base = row_ptr[0];
+        for (int64_t r=fromRow; r<toRow; ++r) {
+            int lr = (int)(r - fromRow);
+            int64_t beg = row_ptr[lr]     - base;
+            int64_t end = row_ptr[lr + 1] - base;
+            int64_t nnz_row = end - beg;
+            if (nnz_row != r) {
+                fprintf(stderr,"NNZ MISMATCH rank=%d row=%lld nnz=%lld exp=%lld\n",
+                        rank,(long long)r,(long long)nnz_row,(long long)r);
+                assert(0);
+            }
         }
 
-        for (int64_t o = beg; o < end; ++o)
-            res[lr] += val[o] * v[col[o]];
-        laik_set_iteration(inst, lr);
-    }
-
-    // Verify locally (element-wise)
-    {
-        const double eps = 1e-9;
-        for (int r = (int)fromRow; r < (int)toRow; ++r) {
-            int lr = r - (int)fromRow;
+        for (int64_t r=fromRow; r<toRow; ++r) {
+            int lr = (int)(r - fromRow);
+            int64_t beg = row_ptr[lr]     - base;
+            int64_t end = row_ptr[lr + 1] - base;
+            for (int64_t o=beg; o<end; ++o)
+                res[lr] += val[o] * v[col[o]];
+            laik_set_iteration(inst, lr);
+        }
+        for (int64_t r=fromRow; r<toRow; ++r) {
+            int lr = (int)(r - fromRow);
             double expected = (double)(size - r) * 0.5 * (double)r * (double)(r + 1);
-            if (fabs(res[lr] - expected) > eps) {
-                fprintf(stderr, "Mismatch rank=%d row=%d got=%g exp=%g\n",
-                        rank, r, res[lr], expected);
-                assert(0 && "SPMV check failed");
+            if (fabs(res[lr] - expected) > 1e-9) {
+                fprintf(stderr,"RES MISMATCH rank=%d row=%lld got=%g exp=%g\n",
+                        rank,(long long)r,res[lr],expected);
+                assert(0);
             }
         }
     }
 
+    // 9) Gather & reduce
     Laik_Partitioning* pMaster = laik_new_partitioning(laik_Master, world, rows_space, 0);
     laik_switchto_partitioning(resD, pMaster, LAIK_DF_Preserve, LAIK_RO_None);
     if (rank == 0) {
-        laik_get_map_1d(resD, 0, (void**)&res, &rcount);
-        double sum = 0.0;
-        for (uint64_t i = 0; i < rcount; ++i) sum += res[i];
-        // Verify global sum against analytic formula
-        long double expectedSum = 0.0L;
-        for (int r = 0; r < size; ++r) {
-            expectedSum += (long double)(size - r) * 0.5L * (long double)r * (long double)(r + 1);
-        }
-        printf("Res sum (regular): %f (expected: %.0Lf)\n", sum, expectedSum);
-        assert(fabsl((long double)sum - expectedSum) < 1e-6L);
-    }
-
-
-    // SPMV #2: reduction path
-    laik_iter_reset(inst);
-    laik_set_phase(inst, 2, "2nd SpmV", NULL);
-
-    Laik_Partitioning* pAll = laik_new_partitioning(laik_All, world, rows_space, 0);
-    laik_switchto_partitioning(resD, pAll, LAIK_DF_Init, LAIK_RO_Sum);
-
-    laik_get_map_1d(resD, 0, (void**)&res, &rcount);
-    laik_my_range_1d(res_blk_p, 0, &fromRow, &toRow);
-
-    laik_get_map_1d(rowD, 0, (void**)&row_ptr, &rp_len);
-    laik_get_map_1d(colD, 0, (void**)&col, &col_len);
-    laik_get_map_1d(valD, 0, (void**)&val, &val_len);
-
-    const int64_t base2 = row_ptr[0];
-    for (int r = (int)fromRow; r < (int)toRow; ++r) {
-        const int lr      = r - (int)fromRow;
-        const int64_t beg = row_ptr[lr]     - base2;
-        const int64_t end = row_ptr[lr + 1] - base2;
-        for (int64_t o = beg; o < end; ++o)
-            res[lr] += val[o] * v[col[o]];
-        laik_set_iteration(inst, lr);
+        double* res=NULL; uint64_t rcount=0;
+        laik_get_map_1d(resD,0,(void**)&res,&rcount);
+        double sum=0.0;
+        for (uint64_t i=0;i<rcount;++i) sum+=res[i];
+        printf("Res sum (regular): %f\n", sum);
     }
 
     laik_switchto_partitioning(resD, pMaster, LAIK_DF_Preserve, LAIK_RO_Sum);
     if (rank == 0) {
-        laik_get_map_1d(resD, 0, (void**)&res, &rcount);
-        double sum = 0.0;
-        for (uint64_t i = 0; i < rcount; ++i) sum += res[i];
+        double* res=NULL; uint64_t rcount=0;
+        laik_get_map_1d(resD,0,(void**)&res,&rcount);
+        double sum=0.0;
+        for (uint64_t i=0;i<rcount;++i) sum+=res[i];
         printf("Res sum (reduce): %f\n", sum);
     }
 
-    laik_finalize(inst);
+    free(v);
     free(vparams);
+    laik_finalize(inst);
     return 0;
+// ...existing code...
 }

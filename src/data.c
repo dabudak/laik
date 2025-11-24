@@ -394,9 +394,6 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
         m->layout = layout;       // all maps use same layout
         m->layoutSection = mapNo; // but different sections of it
 
-       if (laik_is_layout_variable(m->layout)) {
-            m->count = laik_variable_layout_map_nnz(layout, mapNo);
-        }
         if ((mapNo == 0) && (d->map0_base != 0)) {
             laik_log(1, "  using provided memory (%lld bytes at %p with layout %s)",
                      (unsigned long long int) d->map0_size, d->map0_base,
@@ -494,6 +491,10 @@ void laik_map_set_allocation(Laik_Mapping* m,
     // count should be number of indexes in required range
     if (!laik_is_layout_variable(m->layout)) {
         assert(m->count == laik_range_size(&(m->requiredRange)));
+        assert(size >=  m->count * m->data->elemsize);
+    } else {
+        // variable layout: size is nnz * elemsize; just require non-zero
+        assert(size > 0);
     }
     // make sure provided memory buffer is large enough
     assert(size >=  m->count * m->data->elemsize);
@@ -527,9 +528,9 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     int64_t offFrom = l->offset(l, m->layoutSection, &requiredRange.from);
     int64_t offTo   = l->offset(l, m->layoutSection, &requiredRange.to);
 
-    uint64_t size = (uint64_t)(offTo - offFrom) * d->elemsize;
+    uint64_t nnz    = (uint64_t)(offTo - offFrom);
+    uint64_t size   = nnz * d->elemsize;
 
-    // Debug print
     fprintf(stderr,
             "DEBUG allocateMap: data=%s mapNo=%d "
             "range=[%lld,%lld) offFrom=%lld offTo=%lld "
@@ -559,6 +560,11 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     }
 
     laik_map_set_allocation(m, start, size, a);
+
+    // for variable layout, allocCount must reflect nnz
+    if (laik_is_layout_variable(m->layout)) {
+        m->allocCount = nnz;
+    }
 
     laik_log(1, "allocateMap: for '%s'/%d: %llu x %d (%llu B) at %p",
              d->name, m->mapNo, (unsigned long long int) m->count, d->elemsize,
@@ -1504,7 +1510,12 @@ Laik_Mapping* laik_get_map_1d(Laik_Data* d, int n, void** base, uint64_t* count)
     }
 
     if (base) *base = m->base;
-    if (count) *count = m->count;
+    if (count) {
+        if (laik_is_layout_variable(m->layout))
+            *count = m->allocCount; // nnz for variable layout
+        else
+            *count = m->count;      // rows/contiguous element count otherwise
+    }
     return m;
 }
 
