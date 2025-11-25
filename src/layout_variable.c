@@ -194,7 +194,7 @@ static int64_t offset_variable(Laik_Layout* l, int sec, Laik_Index* idx)
 {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
     Var_Entry* e = &vl->e[sec];
-    if (!e->row_ptr || e->count < 2) return 0;
+    if (!e->row_ptr) return 0;
     int64_t li = idx->i[0] - e->first_boundary;
     if (li == (int64_t)(e->count - 1)) // sentinel (exclusive end)
         return e->row_ptr[li] - e->row_ptr[0];
@@ -226,10 +226,10 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
                      mapno_variable,
                      offset_variable,
                      reuse_variable,
-                     describe_variable,      // use variable descriptor
+                     describe_variable,
                      pack_variable,          // variable-specific pack
                      unpack_variable,        // variable-specific unpack
-                     copy_variable);
+                     copy_variable);  // generic copy;
 
     vl->e = (Var_Entry*) calloc(n, sizeof(Var_Entry));
     assert(vl->e);
@@ -241,7 +241,12 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
         assert(to > from);
 
         uint64_t boundary_count = (uint64_t)(to - from + 1);
-
+         fprintf(stderr,
+                "DEBUG laik_new_layout_variable: i=%d from=%lld to=%lld boundary_count=%llu rp_local=%p rp_local[0]=%lld\n",
+                i, (long long)from, (long long)to,
+                (unsigned long long)boundary_count,
+                (void*)rp_local,
+                (long long)rp_local[0]);
         vl->e[i].count          = boundary_count;
         vl->e[i].row_ptr        = rp_local;
         vl->e[i].first_boundary = from;
