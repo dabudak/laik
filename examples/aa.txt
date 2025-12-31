@@ -1,0 +1,193 @@
+deniz@deniz-ThinkPad-E495:~/Desktop/laik$ cd examples/
+deniz@deniz-ThinkPad-E495:~/Desktop/laik/examples$ LAIK_BACKEND=tcp2 LAIK_SIZE=2 ./spmv
+Segmentation fault (core dumped)
+deniz@deniz-ThinkPad-E495:~/Desktop/laik/examples$ 
+deniz@deniz-ThinkPad-E495:~/Desktop/laik/examples$ LAIK_LOG=2 LAIK_BACKEND=tcp2 LAIK_SIZE=2 ./
+spmv
+== LAIK-0000-L00 0001.01  0:19.858 | LAIK git version: 0cc0e-dirty
+== LAIK-0000-L00 0002.01  0:19.858 | TCP2 backend initialized (location 'L0:deniz-ThinkPad-E495:18309', LID 0, rank 0/2, epoch 0, phase
+.. LAIK-0000-L00 0002.02  0:19.858 |     0, listening at 7777, flags: b)
+== LAIK-0001-L00 0001.01  0:19.858 | Enter phase 'init'
+== LAIK-0001-L00 0002.01  0:19.858 | run partitioner 'master' for 'part-0' (group 0, space 'space-0'): 1 ranges
+spmv: src/layout_lex.c:109: offset_lex: Assertion `(off >= 0) && (off < (int64_t) e->count)' failed.
+Aborted (core dumped)
+deniz@deniz-ThinkPad-E495:~/Desktop/laik/examples$ LAIK_LOG=1 LAIK_BACKEND=tcp2 LAIK_SIZE=2 ./spmv
+== deniz-ThinkPad-E495:18657: TCP2 init: cmdline './spmv'
+== deniz-ThinkPad-E495:18657: TCP2 location 'deniz-ThinkPad-E495:18657', home localhost:7777
+== deniz-ThinkPad-E495:18657: TCP2 listening on port 7777
+== deniz-ThinkPad-E495:18657: TCP2 master: waiting for 1 peers to join
+== deniz-ThinkPad-E495:18657: TCP2 Got connection on FD 4 from 127.0.0.1
+== deniz-ThinkPad-E495:18657: TCP2 Sent cmd '# Here is LAIK TCP2 LID 0 (type 'help' for commands)' (len 52) to LID -4 (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 got_bytes(FD 4, peer LID -1, used 0): read 65 bytes (72 65 67 69 73 74 65 72...)
+== deniz-ThinkPad-E495:18657: TCP2 handle commands in receive buf of FD 4 (LID -1, 65 bytes)
+== deniz-ThinkPad-E495:18657: TCP2 Got cmd 'register deniz-ThinkPad-E495:18691 deniz-ThinkPad-E495 34925 bin' (len 64) from LID -1
+.. deniz-ThinkPad-E495:18657:     (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 registered new LID 1: location L1:deniz-ThinkPad-E495:18691 (at host deniz-ThinkPad-E495, port
+.. deniz-ThinkPad-E495:18657:     34925, flags b)
+== deniz-ThinkPad-E495:18657: TCP2 Sent cmd 'id 1 L1:deniz-ThinkPad-E495:18691 deniz-ThinkPad-E495 34925 b' (len 61) to LID 1 (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 Sent cmd 'newid 0 L0:deniz-ThinkPad-E495:18657 deniz-ThinkPad-E495 7777 b' (len 63) to LID 1
+.. deniz-ThinkPad-E495:18657:     (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 Sent cmd 'getready' (len 8) to LID 1 (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 got_bytes(FD 4, peer LID 1, used 0): read 3 bytes (6f 6b 0a)
+== deniz-ThinkPad-E495:18657: TCP2 handle commands in receive buf of FD 4 (LID 1, 3 bytes)
+== deniz-ThinkPad-E495:18657: TCP2 Got cmd 'ok' (len 2) from LID 1 (FD 4)
+== deniz-ThinkPad-E495:18657: TCP2 got 'ok' from LID 1: registration done
+== deniz-ThinkPad-E495:18657: TCP2 master: 1 peers registered, startup done
+== deniz-ThinkPad-E495:18657: TCP2 Sent cmd 'phase 0 0' (len 9) to LID 1 (FD 4)
+== LAIK-0000-L00 0020.01  0:06.512 | LAIK git version: 0cc0e-dirty
+== LAIK-0000-L00 0021.01  0:06.512 | TCP2 newcomer: added 2, old 0, remove 0 (dead 0)
+== LAIK-0000-L00 0022.01  0:06.512 | TCP2 backend initialized (location 'L0:deniz-ThinkPad-E495:18657', LID 0, rank 0/2, epoch 0, phase
+.. LAIK-0000-L00 0022.02  0:06.512 |     0, listening at 7777, flags: b)
+== LAIK-0001-L00 0001.01  0:06.512 | Enter phase 'init'
+== LAIK-0001-L00 0002.01  0:06.512 | new 1d space 'space-0': [0;10001[
+== LAIK-0001-L00 0003.01  0:06.512 | new data 'data-0':
+.. LAIK-0001-L00 0003.02  0:06.512 |   type 'int64' (elemsize 8), space 'space-0' (10001 elems, 0.080 MB)
+== LAIK-0001-L00 0004.01  0:06.512 | new 1d space 'space-1': [0;10000[
+== LAIK-0001-L00 0005.01  0:06.512 | new data 'data-1':
+.. LAIK-0001-L00 0005.02  0:06.512 |   type 'double' (elemsize 8), space 'space-1' (10000 elems, 0.080 MB)
+== LAIK-0001-L00 0006.01  0:06.512 | new data 'data-2':
+.. LAIK-0001-L00 0006.02  0:06.512 |   type 'int64' (elemsize 8), space 'space-1' (10000 elems, 0.080 MB)
+== LAIK-0001-L00 0007.01  0:06.512 | run partitioner 'master' (group 0, space 'space-0'):
+.. LAIK-0001-L00 0007.02  0:06.512 |   1 range(s) assigned to 2 task ids on [0;10001[: (tid:range-tag/mapNo)
+.. LAIK-0001-L00 0007.03  0:06.512 |     0:[0;10001[-0/0
+== LAIK-0001-L00 0008.01  0:06.513 | run partitioner 'master' for 'part-0' (group 0, space 'space-0'): 1 ranges
+== LAIK-0001-L00 0009.01  0:06.513 | prepareMaps: 1 maps for data 'data-0' (partitioning 'part-0')
+== LAIK-0001-L00 0010.01  0:06.513 | coveringRanges: 1 maps
+== LAIK-0001-L00 0011.01  0:06.513 |     mapNo 0: covering range [0;10001[, task ranges 0 - 0
+== LAIK-0001-L00 0012.01  0:06.513 | calculated transition (-) ==(-)=> 'part-0': (no actions)
+spmv: src/layout_lex.c:109: offset_lex: Assertion `(off >= 0) && (off < (int64_t) e->count)' failed.
+Aborted (core dumped)
+deniz@deniz-ThinkPad-E495:~/Desktop/laik/examples$ LAIK_LOG=1 LAIK_BACKEND=tcp2 LAIK_SIZE=2 gdb ./sp
+mv
+GNU gdb (Ubuntu 10.2-0ubuntu1~20.04~1) 10.2
+Copyright (C) 2021 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word"...
+Reading symbols from ./spmv...
+(gdb) bt
+No stack.
+(gdb) run
+Starting program: /home/deniz/Desktop/laik/examples/spmv 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+== deniz-ThinkPad-E495:18817: TCP2 init: cmdline '/home/deniz/Desktop/laik/examples/spmv'
+== deniz-ThinkPad-E495:18817: TCP2 location 'deniz-ThinkPad-E495:18817', home localhost:7777
+== deniz-ThinkPad-E495:18817: TCP2 listening on port 7777
+== deniz-ThinkPad-E495:18817: TCP2 master: waiting for 1 peers to join
+== deniz-ThinkPad-E495:18817: TCP2 Got connection on FD 4 from 127.0.0.1
+== deniz-ThinkPad-E495:18817: TCP2 Sent cmd '# Here is LAIK TCP2 LID 0 (type 'help' for commands)' (len 52) to LID -4 (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 got_bytes(FD 4, peer LID -1, used 0): read 65 bytes (72 65 67 69 73 74 65 72...)
+== deniz-ThinkPad-E495:18817: TCP2 handle commands in receive buf of FD 4 (LID -1, 65 bytes)
+== deniz-ThinkPad-E495:18817: TCP2 Got cmd 'register deniz-ThinkPad-E495:18879 deniz-ThinkPad-E495 33027 bin' (len 64) from LID -1
+.. deniz-ThinkPad-E495:18817:     (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 registered new LID 1: location L1:deniz-ThinkPad-E495:18879 (at host deniz-ThinkPad-E495, port
+.. deniz-ThinkPad-E495:18817:     33027, flags b)
+== deniz-ThinkPad-E495:18817: TCP2 Sent cmd 'id 1 L1:deniz-ThinkPad-E495:18879 deniz-ThinkPad-E495 33027 b' (len 61) to LID 1 (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 Sent cmd 'newid 0 L0:deniz-ThinkPad-E495:18817 deniz-ThinkPad-E495 7777 b' (len 63) to LID 1
+.. deniz-ThinkPad-E495:18817:     (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 Sent cmd 'getready' (len 8) to LID 1 (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 got_bytes(FD 4, peer LID 1, used 0): read 3 bytes (6f 6b 0a)
+== deniz-ThinkPad-E495:18817: TCP2 handle commands in receive buf of FD 4 (LID 1, 3 bytes)
+== deniz-ThinkPad-E495:18817: TCP2 Got cmd 'ok' (len 2) from LID 1 (FD 4)
+== deniz-ThinkPad-E495:18817: TCP2 got 'ok' from LID 1: registration done
+== deniz-ThinkPad-E495:18817: TCP2 master: 1 peers registered, startup done
+== deniz-ThinkPad-E495:18817: TCP2 Sent cmd 'phase 0 0' (len 9) to LID 1 (FD 4)
+== LAIK-0000-L00 0020.01  0:08.909 | LAIK git version: 0cc0e-dirty
+== LAIK-0000-L00 0021.01  0:08.909 | TCP2 newcomer: added 2, old 0, remove 0 (dead 0)
+== LAIK-0000-L00 0022.01  0:08.909 | TCP2 backend initialized (location 'L0:deniz-ThinkPad-E495:18817', LID 0, rank 0/2, epoch 0, phase
+.. LAIK-0000-L00 0022.02  0:08.909 |     0, listening at 7777, flags: b)
+== LAIK-0001-L00 0001.01  0:08.909 | Enter phase 'init'
+== LAIK-0001-L00 0002.01  0:08.909 | new 1d space 'space-0': [0;10001[
+== LAIK-0001-L00 0003.01  0:08.909 | new data 'data-0':
+.. LAIK-0001-L00 0003.02  0:08.909 |   type 'int64' (elemsize 8), space 'space-0' (10001 elems, 0.080 MB)
+== LAIK-0001-L00 0004.01  0:08.909 | new 1d space 'space-1': [0;10000[
+== LAIK-0001-L00 0005.01  0:08.909 | new data 'data-1':
+.. LAIK-0001-L00 0005.02  0:08.909 |   type 'double' (elemsize 8), space 'space-1' (10000 elems, 0.080 MB)
+== LAIK-0001-L00 0006.01  0:08.909 | new data 'data-2':
+.. LAIK-0001-L00 0006.02  0:08.909 |   type 'int64' (elemsize 8), space 'space-1' (10000 elems, 0.080 MB)
+== LAIK-0001-L00 0007.01  0:08.909 | run partitioner 'master' (group 0, space 'space-0'):
+.. LAIK-0001-L00 0007.02  0:08.909 |   1 range(s) assigned to 2 task ids on [0;10001[: (tid:range-tag/mapNo)
+.. LAIK-0001-L00 0007.03  0:08.909 |     0:[0;10001[-0/0
+== LAIK-0001-L00 0008.01  0:08.909 | run partitioner 'master' for 'part-0' (group 0, space 'space-0'): 1 ranges
+== LAIK-0001-L00 0009.01  0:08.909 | prepareMaps: 1 maps for data 'data-0' (partitioning 'part-0')
+== LAIK-0001-L00 0010.01  0:08.909 | coveringRanges: 1 maps
+== LAIK-0001-L00 0011.01  0:08.909 |     mapNo 0: covering range [0;10001[, task ranges 0 - 0
+== LAIK-0001-L00 0012.01  0:08.909 | calculated transition (-) ==(-)=> 'part-0': (no actions)
+spmv: src/layout_lex.c:109: offset_lex: Assertion `(off >= 0) && (off < (int64_t) e->count)' failed.
+
+Program received signal SIGABRT, Aborted.
+__GI_raise (sig=sig@entry=6) at ../sysdeps/unix/sysv/linux/raise.c:50
+50      ../sysdeps/unix/sysv/linux/raise.c: No such file or directory.
+(gdb) p e->count
+There is no member named count.
+(gdb) up
+#1  0x00007ffff6973859 in __GI_abort () at abort.c:79
+79      abort.c: No such file or directory.
+(gdb) up
+#2  0x00007ffff6973729 in __assert_fail_base (
+    fmt=0x7ffff6b09588 "%s%s%s:%u: %s%sAssertion `%s' failed.\n%n", 
+    assertion=0x7ffff6bb6200 "(off >= 0) && (off < (int64_t) e->count)", 
+    file=0x7ffff6bb61a0 "src/layout_lex.c", line=109, function=<optimized out>) at assert.c:94
+94      assert.c: No such file or directory.
+(gdb) up
+#3  0x00007ffff6984fd6 in __GI___assert_fail (
+    assertion=0x7ffff6bb6200 "(off >= 0) && (off < (int64_t) e->count)", 
+    file=0x7ffff6bb61a0 "src/layout_lex.c", line=109, 
+    function=0x7ffff6bb66e0 <__PRETTY_FUNCTION__.5175> "offset_lex") at assert.c:103
+103     in assert.c
+(gdb) up
+#4  0x00007ffff6b9a6e7 in offset_lex (l=0x5555555787c0, n=0, idx=0x7fffffffd980)
+    at src/layout_lex.c:109
+109         assert((off >= 0) && (off < (int64_t) e->count));
+(gdb) p e->count
+$1 = 10001
+(gdb) p off
+$2 = 10001
+(gdb) l
+104             off += (idx->i[1] - e->range.from.i[1]) * e->stride[1];
+105             if (dims > 2) {
+106                 off += (idx->i[2] - e->range.from.i[2]) * e->stride[2];
+107             }
+108         }
+109         assert((off >= 0) && (off < (int64_t) e->count));
+110         return off;
+111     }
+112
+113
+(gdb) up
+#5  0x00007ffff6b6ddd2 in laik_allocateMap (m=0x555555564b28, ss=0x555555565660) at src/data.c:514
+514         uint64_t size = (l -> offset(l, m->layoutSection, &requiredRange.to) - l -> offset(l, m->layoutSection, &requiredRange.from)) * d->elemsize;
+(gdb) 
+
+
+ 1974  mpirun -n 2 ./examples/spmv
+ 1975  LAIK_BACKEND=tcp2 LAIK_SIZE=2 ./examples/spmv
+ 1976  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 ./examples/spmv
+ 1977  make
+ 1978  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 ./examples/spmv
+ 1979  clear
+ 1980  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 ./examples/spmv
+ 1981  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 LAIK_TCP2_BIN=0 ./examples/spmv
+ 1982  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 ./examples/spmv
+ 1983  clear
+ 1984  LAIK_BACKEND=tcp2 LAIK_SIZE=2 LAIK_LOG=1 LAIK_TCP2_BIN=0 ./examples/spmv
+ 1985  whistory
+ 1986  history
+
+
+ 1920  LAIK_LOG=2 LAIK_BACKEND=tcp2 LAIK_SIZE=2 ./spmv
+ 1921  LAIK_LOG=1 L
+ 1922  LAIK_LOG=1 LAIK_BACKEND=tcp2 LAIK_SIZE=2 gdb ./spmv
+ 1923  git log
+ 1924  git branch
