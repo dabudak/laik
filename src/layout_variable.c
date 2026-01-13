@@ -201,7 +201,21 @@ static int64_t offset_variable(Laik_Layout* l, int sec, Laik_Index* idx)
     assert(li >= 0 && li < (int64_t)(e->count - 1));
     return e->row_ptr[li] - e->row_ptr[0];
 }
-
+// Return element count for logical index in variable layout (rows as elements)
+// Size(idx) = row_ptr[li+1] - row_ptr[li], where li = idx->i[0] - first_boundary
+static uint64_t size_variable(Laik_Layout* l, int n, Laik_Index* idx)
+{
+    Laik_Layout_Var* vl = laik_is_layout_variable(l);
+    assert(vl);
+    assert(n >= 0 && n < l->map_count);
+    Var_Entry* e = &vl->e[n];
+    assert(e->row_ptr);
+    int64_t li = idx->i[0] - e->first_boundary;
+    // boundaries array has count = rows + 1 entries; valid rows are [0, count-2]
+    assert(li >= 0 && li < (int64_t)(e->count - 1));
+    uint64_t nnz = (uint64_t)(e->row_ptr[li+1] - e->row_ptr[li]);
+    return nnz;
+}
 
 extern int laik_layout_pack_gen(Laik_Mapping* m, Laik_Range* r, Laik_Index* idx, char* buf, unsigned int size);
 extern char* laik_layout_describe_gen(Laik_Layout* l);
@@ -229,7 +243,8 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
                      describe_variable,
                      pack_variable,          // variable-specific pack
                      unpack_variable,        // variable-specific unpack
-                     copy_variable);  // generic copy;
+                     copy_variable, // generic copy;
+                     size_variable);  
 
     vl->e = (Var_Entry*) calloc(n, sizeof(Var_Entry));
     assert(vl->e);

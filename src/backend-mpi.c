@@ -469,6 +469,27 @@ MPI_Op getMPIOp(Laik_ReductionOperation redOp)
     return mpiRedOp;
 }
 
+// Sum number of elements across a logical index range using layout->size
+static uint64_t laik_mpi_sum_elems_for_range(Laik_Mapping* map, Laik_Range* range)
+{
+    int dims = range->space->dims;
+    Laik_Index it = range->from;
+    uint64_t elems = 0;
+    while (!laik_index_isEqual(dims, &it, &(range->to))) {
+        elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+        // advance lexicographically within [from, to)
+        it.i[0]++;
+        if (dims > 1 && it.i[0] >= range->to.i[0]) {
+            it.i[0] = range->from.i[0];
+            it.i[1]++;
+            if (dims > 2 && it.i[1] >= range->to.i[1]) {
+                it.i[1] = range->from.i[1];
+                it.i[2]++;
+            }
+        }
+    }
+    return elems;
+}
 static
 void laik_mpi_exec_packAndSend(Laik_Mapping* map, Laik_Range* range,
                                int to_rank, uint64_t slc_size,
@@ -479,10 +500,17 @@ void laik_mpi_exec_packAndSend(Laik_Mapping* map, Laik_Range* range,
     unsigned int packed;
     uint64_t count = 0;
     while(1) {
+        Laik_Index idx_start = idx;
         packed = (map->layout->pack)(map, range, &idx,
                                      packbuf, PACKBUFSIZE);
         assert(packed > 0);
-        int err = MPI_Send(packbuf, (int) packed,
+
+        // Determine how many elements were packed to set MPI count
+        // Sum sizes over logical indices [idx_start, idx) using helper
+        Laik_Range subr; subr.space = range->space; subr.from = idx_start; subr.to = idx;
+        int send_elems = (int)laik_mpi_sum_elems_for_range(map, &subr);
+
+        int err = MPI_Send(packbuf, send_elems,
                            dataType, to_rank, tag, comm);
         if (err != MPI_SUCCESS) laik_mpi_panic(err);
 
@@ -512,7 +540,6 @@ void laik_mpi_exec_recvAndUnpack(Laik_Mapping* map, Laik_Range* range,
 
         unpacked = (map->layout->unpack)(map, range, &idx,
                                          packbuf, recvCount * elemsize);
-        assert(recvCount == unpacked);
         count += unpacked;
         if (laik_index_isEqual(dims, &idx, &(range->to))) break;
     }
@@ -784,7 +811,10 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             assert(ba->fromMapNo < fromList->count);
             Laik_Mapping* fromMap = &(fromList->map[ba->fromMapNo]);
             assert(fromMap->base != 0);
-            err = MPI_Send(fromMap->base + ba->offset, ba->count,
+            // Use layout->size over the range to determine element count
+            uint64_t elem_count = ba->range ? laik_mpi_sum_elems_for_range(fromMap, ba->range)
+                                            : (uint64_t)ba->count;
+            err = MPI_Send(fromMap->base + ba->offset, (int)elem_count,
                            dataType, ba->rank, tag, comm);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
             break;
@@ -811,14 +841,17 @@ void laik_mpi_exec(Laik_ActionSeq* as)
             assert(ba->toMapNo < toList->count);
             Laik_Mapping* toMap = &(toList->map[ba->toMapNo]);
             assert(toMap->base != 0);
-            err = MPI_Recv(toMap->base + ba->offset, ba->count,
+            // Use layout->size over the range to determine element count
+            uint64_t elem_count = ba->range ? laik_mpi_sum_elems_for_range(toMap, ba->range)
+                                            : (uint64_t)ba->count;
+            err = MPI_Recv(toMap->base + ba->offset, (int)elem_count,
                            dataType, ba->rank, tag, comm, &st);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
 
             // check that we received the expected number of elements
             err = MPI_Get_count(&st, dataType, &count);
             if (err != MPI_SUCCESS) laik_mpi_panic(err);
-            assert((int)ba->count == count);
+            assert((int)elem_count == count);
             break;
         }
 

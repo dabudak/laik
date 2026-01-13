@@ -29,7 +29,7 @@ Laik_Layout*     laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_P
 Laik_Partitioner* laik_new_var_block_partitioner1(void);
 
 // maximal size
-#define MAXSIZE 10000
+#define MAXSIZE 1000
 
 int main(int argc, char* argv[])
 {

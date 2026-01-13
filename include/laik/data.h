@@ -336,6 +336,8 @@ typedef unsigned int (*laik_layout_unpack_t)(
 // return string describing the layout (for debug output)
 typedef char* (*laik_layout_describe_t)(Laik_Layout*);
 
+typedef int64_t (*laik_layout_size_t)(Laik_Layout*, int n, Laik_Index*);
+
 // public as it is the header of custom layouts
 struct _Laik_Layout {
     int dims;
@@ -350,6 +352,9 @@ struct _Laik_Layout {
     laik_layout_pack_t pack;
     laik_layout_unpack_t unpack;
     laik_layout_copy_t copy;
+    // return element count of a logical index in section <n>
+    // if unset, logical size defaults to 1
+    laik_layout_size_t size;
 };
 
 void laik_init_layout(Laik_Layout* l, int dims, int map_count, uint64_t count,
@@ -360,7 +365,8 @@ void laik_init_layout(Laik_Layout* l, int dims, int map_count, uint64_t count,
                       laik_layout_describe_t describe,
                       laik_layout_pack_t pack,
                       laik_layout_unpack_t unpack,
-                      laik_layout_copy_t copy);
+                      laik_layout_copy_t copy,
+                      laik_layout_size_t size);
 
 // (slow) generic copy just using offset function from layout interface
 void laik_layout_copy_gen(Laik_Range* range,
@@ -378,6 +384,12 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
 
 // return stride for dimension <d> in lex layout mapping <n>
 uint64_t laik_layout_lex_stride(Laik_Layout* l, int n, int d);
+
+// layout-specific element-size helpers
+// For lex layout each logical index maps to exactly 1 element
+uint64_t laik_layout_lex_index_size(Laik_Layout* l, int n, Laik_Index* idx);
+// For variable layout, size of logical index i is row_ptr[i+1] - row_ptr[i]
+uint64_t laik_layout_variable_index_size(Laik_Layout* l, int n, Laik_Index* idx);
 
 
 //----------------------------------

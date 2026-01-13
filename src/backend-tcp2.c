@@ -706,39 +706,39 @@ int got_binary_data(InstData* d, int lid, char* buf, int len)
     Laik_Mapping* m = p->rmap;
     assert(m != 0);
     Laik_Layout* ll = m->layout;
-    bool inTraversal = true;
-    int consumed = 0;
-    while(len - consumed >= esize) {
-        assert(inTraversal);
-        int64_t off = ll->offset(ll, m->layoutSection, &(p->rcv_idx));
-        char* idxPtr = m->start + off * p->relemsize;
-        if (p->rro == LAIK_RO_None)
-            memcpy(idxPtr, buf, esize);
-        else {
-            Laik_Type* t = p->rmap->data->type;
-            assert(t->reduce);
-            (t->reduce)(idxPtr, idxPtr, buf, 1, p->rro);
-        }
-        if ((esize == 8) && laik_log_begin(1)) {
-            char pstr[70];
-            int dims = p->rcv_range->space->dims;
-            sprintf(pstr, "(%d:%s)", p->roff, istr(dims, &(p->rcv_idx)));
-            laik_log(1, " pos %s: in %f res %f\n", pstr, *((double*)buf), *((double*)idxPtr));
-        }
-        buf += p->relemsize;
-        consumed += p->relemsize;
-        p->roff++;
-        inTraversal = next_lex(p->rcv_range, &(p->rcv_idx));
-    }
-    assert(p->roff <= p->rcount);
+    // Only consume complete element-aligned chunks; otherwise wait for more data
+    if (len <= 0 || (len % esize) != 0)
+        return 0;
+    int units = len / esize;
 
-    laik_log(1, "TCP2 consumed %d bytes, received %d/%d", consumed, p->roff, p->rcount);
+    int64_t off = ll->offset(ll, m->layoutSection, &(p->rcv_idx));
+    char* idxPtr = m->start + off * p->relemsize;
+    if (p->rro == LAIK_RO_None)
+        memcpy(idxPtr, buf, len);
+    else {
+        Laik_Type* t = p->rmap->data->type;
+        assert(t->reduce);
+        (t->reduce)(idxPtr, idxPtr, buf, units, p->rro);
+    }
+    if ((esize == 8) && laik_log_begin(1)) {
+        char pstr[70];
+        int dims = p->rcv_range->space->dims;
+        sprintf(pstr, "(%d:%s)", p->roff, istr(dims, &(p->rcv_idx)));
+        laik_log(1, " pos %s: in %f res %f\n", pstr, *((double*)buf), *((double*)idxPtr));
+    }
+
+    p->roff++;
+    bool inTraversal = next_lex(p->rcv_range, &(p->rcv_idx));
+    assert(inTraversal == (p->roff < p->rcount));
+
+    laik_log(1, "TCP2 consumed %d bytes, received %d/%d", len, p->roff, p->rcount);
 
     if (p->roff == p->rcount)
         d->exit = 1;
 
-    return consumed;
+    return len;
 }
+
 
 // "data" command received
 // return false if command cannot be processed yet, no matching receive
@@ -758,8 +758,8 @@ void got_data(InstData* d, int lid, char* msg)
         return;
     }
 
-    // assume only one element per data command
-    assert(p->relemsize == len);
+    // len is total bytes for this logical index (may be multiple elements)
+    assert(len > 0);
     Laik_Mapping* m = p->rmap;
     assert(m != 0);
     Laik_Layout* ll = m->layout;
@@ -777,8 +777,8 @@ void got_data(InstData* d, int lid, char* msg)
         while(msg[i] && (msg[i] == ' ')) i++;
     }
 
-    char data_in[100];
-    assert(len < 100);
+    char* data_in = (char*) malloc(len);
+    assert(data_in);
     int l = 0;
 
     // parse hex bytes
@@ -799,13 +799,15 @@ void got_data(InstData* d, int lid, char* msg)
     }
     assert(l == len);
 
-    assert(l == p->relemsize);
+    int esize = p->relemsize;
+    assert((len % esize) == 0);
+    int units = len / esize;
     if (p->rro == LAIK_RO_None)
         memcpy(idxPtr, data_in, len);
     else {
         Laik_Type* t = p->rmap->data->type;
         assert(t->reduce);
-        (t->reduce)(idxPtr, idxPtr, data_in, 1, p->rro);
+        (t->reduce)(idxPtr, idxPtr, data_in, units, p->rro);
     }
 
     if (len == 8) laik_log(1, " pos %s: in %f res %f\n", pstr, *((double*)data_in), *((double*)idxPtr));
@@ -820,6 +822,7 @@ void got_data(InstData* d, int lid, char* msg)
     if (p->roff == p->rcount)
         d->exit = 1;
 
+    free(data_in);
     return;
 }
 
@@ -2181,16 +2184,18 @@ void send_range(Laik_Mapping* fromMap, Laik_Range* range, int toLID)
     while(1) {
         int64_t off = l->offset(l, fromMap->layoutSection, &idx);
         void* idxPtr = fromMap->start + off * esize;
-        if (send_binary_data)
-            send_data_bin(ecount, dims, &idx, toLID, idxPtr, esize);
+        int count = l->size(l, fromMap->layoutSection, &idx);
+        if (send_binary_data) {
+            send_data_bin(ecount, dims, &idx, toLID, idxPtr, esize * count);
+            // ensure exactly one binary frame per logical index
+            send_data_bin_flush(toLID);
+        }
         else
-            send_data(ecount, dims, &idx, toLID, idxPtr, esize);
+            send_data(ecount, dims, &idx, toLID, idxPtr, esize * count);
         ecount++;
         if (!next_lex(range, &idx)) break;
     }
     assert(ecount == (int) laik_range_size(range));
-    if (send_binary_data)
-        send_data_bin_flush(toLID);
 
     // withdraw our right to send further data
     p->scount = 0;

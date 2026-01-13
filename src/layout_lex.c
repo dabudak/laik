@@ -479,6 +479,14 @@ unsigned int unpack_lex(Laik_Mapping* m, Laik_Range* s,
 }
 
 
+// size of a logical index in lex layout is always 1 element
+static uint64_t size_lex(Laik_Layout* l, int n, Laik_Index* idx)
+{
+    (void)l; (void)n; (void)idx;
+    return 1ULL;
+}
+
+
 // create layout for lexicographical layout covering <n> ranges
 Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges, Laik_Data_Parameters* params)
 {
@@ -497,7 +505,8 @@ Laik_Layout* laik_new_layout_lex(int n, Laik_Range* ranges, Laik_Data_Parameters
                      describe_lex,
                      pack_lex,
                      unpack_lex,
-                     copy_lex);
+                     copy_lex,
+                     size_lex);
 
     uint64_t count = 0;
     for(int i = 0; i < n; i++) {
