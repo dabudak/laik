@@ -249,6 +249,8 @@ typedef struct _Peer {
     int rcount;    // element count in receive
     int relemsize; // expected byte count per element
     int roff;      // receive offset
+    int rbytes_expected; // bytes expected for current logical index
+    int rbytes_received; // bytes received so far for current logical index
     Laik_Mapping* rmap; // mapping to write received data to
     Laik_Range* rcv_range; // range to write received data to
     Laik_Index rcv_idx; // index representing receive progress
@@ -711,10 +713,19 @@ int got_binary_data(InstData* d, int lid, char* buf, int len)
         return 0;
     int units = len / esize;
 
+    // expected byte count for current logical index
+    if (p->rbytes_expected == 0 || p->rbytes_received == p->rbytes_expected) {
+        int count = ll->size(ll, m->layoutSection, &(p->rcv_idx));
+        p->rbytes_expected = count * esize;
+        p->rbytes_received = 0;
+    }
+    assert(p->rbytes_expected > 0);
+    assert(p->rbytes_received + len <= p->rbytes_expected);
+
     int64_t off = ll->offset(ll, m->layoutSection, &(p->rcv_idx));
-    char* idxPtr = m->start + off * p->relemsize;
+    char* idxPtr = m->start + off * p->relemsize + p->rbytes_received;
     if (p->rro == LAIK_RO_None)
-        memcpy(idxPtr, buf, len);
+        memcpy(idxPtr, buf, (size_t)len);
     else {
         Laik_Type* t = p->rmap->data->type;
         assert(t->reduce);
@@ -727,14 +738,22 @@ int got_binary_data(InstData* d, int lid, char* buf, int len)
         laik_log(1, " pos %s: in %f res %f\n", pstr, *((double*)buf), *((double*)idxPtr));
     }
 
-    p->roff++;
-    bool inTraversal = next_lex(p->rcv_range, &(p->rcv_idx));
-    assert(inTraversal == (p->roff < p->rcount));
+    p->rbytes_received += len;
+    if (p->rbytes_received == p->rbytes_expected) {
+        p->roff++;
+        bool inTraversal = next_lex(p->rcv_range, &(p->rcv_idx));
+        assert(inTraversal == (p->roff < p->rcount));
+        p->rbytes_expected = 0;
+        p->rbytes_received = 0;
 
-    laik_log(1, "TCP2 consumed %d bytes, received %d/%d", len, p->roff, p->rcount);
+        laik_log(1, "TCP2 consumed %d bytes, completed idx, received %d/%d", len, p->roff, p->rcount);
 
-    if (p->roff == p->rcount)
-        d->exit = 1;
+        if (p->roff == p->rcount)
+            d->exit = 1;
+    }
+    else {
+        laik_log(1, "TCP2 consumed %d bytes, partial idx %d/%d bytes", len, p->rbytes_received, p->rbytes_expected);
+    }
 
     return len;
 }
@@ -2117,11 +2136,56 @@ int sbuf_used = 3; // reserve space for header
 int sbuf_toLID = -1;
 char sbuf[SBUF_LEN];
 
+// binary protocol header encodes payload length in 2 bytes
+#define TCP2_BIN_MAX_PAYLOAD 65535
+
+static
+void send_bin_payload(int toLID, const void* p, int esize, int count)
+{
+    // Send one logical index payload as one or more 'B' frames.
+    // IMPORTANT: payload length must be element-aligned (len % esize == 0),
+    // as the receiver only consumes element-aligned chunks.
+    if (count <= 0) return;
+    assert(esize > 0);
+
+    int max_units = TCP2_BIN_MAX_PAYLOAD / esize;
+    assert(max_units > 0);
+
+    const unsigned char* cur = (const unsigned char*)p;
+    int remaining = count;
+    while (remaining > 0) {
+        int units = remaining;
+        if (units > max_units) units = max_units;
+        int chunk = units * esize;
+
+        unsigned char* frame = (unsigned char*)malloc((size_t)chunk + 3);
+        assert(frame);
+        frame[0] = 'B';
+        frame[1] = chunk & 255;
+        frame[2] = chunk >> 8;
+        memcpy(frame + 3, cur, (size_t)chunk);
+        send_bin((InstData*)instance->backend_data, toLID, (char*)frame, chunk + 3);
+        free(frame);
+
+        cur += chunk;
+        remaining -= units;
+    }
+}
+
 static
 void send_data_bin_flush(int toLID)
 {
-    if (sbuf_used == 0) return;
-    assert(sbuf_toLID == toLID);
+    // sbuf_used includes 3 reserved header bytes. If there is no payload,
+    // treat buffer as empty.
+    if (sbuf_used <= 3) {
+        sbuf_used = 3;
+        sbuf_toLID = -1;
+        return;
+    }
+
+    // If caller flushes with a different LID, flush for the buffer owner.
+    if (sbuf_toLID >= 0 && sbuf_toLID != toLID)
+        toLID = sbuf_toLID;
 
     // prepend data to send with header with byte count
     int bytes = sbuf_used - 3;
@@ -2140,10 +2204,13 @@ void send_data_bin(int n, int dims, Laik_Index* idx, int toLID, void* p, int s)
         send_data_bin_flush(toLID);
     if (sbuf_toLID < 0)
         sbuf_toLID = toLID;
-    else
-        assert(sbuf_toLID == toLID);
+    else if (sbuf_toLID != toLID) {
+        // destination switch: flush pending buffer first
+        send_data_bin_flush(sbuf_toLID);
+        sbuf_toLID = toLID;
+    }
 
-    memcpy(sbuf + sbuf_used, p, s);
+    memcpy(sbuf + sbuf_used, p, (size_t)s);
     sbuf_used += s;
 
     if (laik_log_begin(1)) {
@@ -2185,13 +2252,11 @@ void send_range(Laik_Mapping* fromMap, Laik_Range* range, int toLID)
         int64_t off = l->offset(l, fromMap->layoutSection, &idx);
         void* idxPtr = fromMap->start + off * esize;
         int count = l->size(l, fromMap->layoutSection, &idx);
-        if (send_binary_data) {
-            send_data_bin(ecount, dims, &idx, toLID, idxPtr, esize * count);
-            // ensure exactly one binary frame per logical index
-            send_data_bin_flush(toLID);
-        }
+        int bytes_total = esize * count;
+        if (send_binary_data)
+            send_bin_payload(toLID, idxPtr, esize, count);
         else
-            send_data(ecount, dims, &idx, toLID, idxPtr, esize * count);
+            send_data(ecount, dims, &idx, toLID, idxPtr, bytes_total);
         ecount++;
         if (!next_lex(range, &idx)) break;
     }
@@ -2222,6 +2287,8 @@ void recv_range(Laik_Range* range, int fromLID, Laik_Mapping* toMap, Laik_Reduct
     p->rcv_range = range;
     p->rcv_idx = range->from;
     p->rro = ro;
+    p->rbytes_expected = 0;
+    p->rbytes_received = 0;
 
     // give peer the right to start sending data consisting of given number of elements
     char msg[50];

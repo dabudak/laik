@@ -99,6 +99,11 @@ void laik_free(Laik_Data*);
 
 typedef struct _Laik_Data_Parameters {
     Laik_Data* prefix_row_data; // CSR row-pointer (size+1), used by variable layout
+    // Vector layout parameters (compact local + external mapping)
+    const int64_t* vector_local_indices;    // length = vector_local_count
+    uint64_t       vector_local_count;      // number of locally owned indices
+    const int64_t* vector_external_indices; // length = vector_external_count
+    uint64_t       vector_external_count;   // number of external indices
 } Laik_Data_Parameters;
 
 void laik_data_attach_params(Laik_Data* d, Laik_Data_Parameters* params);
@@ -108,6 +113,9 @@ typedef Laik_Layout* (*laik_layout_factory_t)(int n, Laik_Range*, Laik_Data_Para
 
 // change layout factory to use for generating mapping layouts
 void laik_data_set_layout_factory(Laik_Data* d, laik_layout_factory_t);
+
+// vector layout factory
+Laik_Layout* laik_new_layout_vector(int n, Laik_Range*, Laik_Data_Parameters* params);
 
 
 //

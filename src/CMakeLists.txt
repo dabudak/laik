@@ -15,6 +15,7 @@ add_library ("laik" SHARED
     "data.c"
     "debug.c"
     "external.c"
+    "layout_vector.c"
     "partitioner.c"
     "partitioning.c"
     "profiling.c"

@@ -18,6 +18,10 @@
 #ifndef LAIK_H
 #define LAIK_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // include headers of all Laik modules (without LAIK backends)
 #include "laik/core.h"
 #include "laik/space.h"
@@ -27,5 +31,9 @@
 #include "laik/program.h"
 #include "laik/profiling.h"
 #include "laik/ext.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // LAIK_H

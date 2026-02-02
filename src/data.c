@@ -33,6 +33,9 @@ Laik_Allocator *laik_allocator_def = 0;
 extern struct Laik_Layout_Var;
 extern uint64_t laik_variable_layout_map_nnz(Laik_Layout* l, int mapNo);        
 extern struct Laik_Layout_Var* laik_is_layout_variable(Laik_Layout* l);
+extern struct Laik_Layout_Vector;
+extern struct Laik_Layout_Vector* laik_is_layout_vector(Laik_Layout* l);
+extern uint64_t laik_vector_layout_total(Laik_Layout* l);
 
 // initialize the LAIK data module, called from laik_new_instance
 void laik_data_init()
@@ -391,6 +394,8 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
         Laik_Mapping* m = &(ml->map[mapNo]);
         m->requiredRange = ranges[mapNo];
         m->count = laik_range_size(&(ranges[mapNo]));
+        if (laik_is_layout_vector(layout))
+            m->count = laik_vector_layout_total(layout);
         m->layout = layout;       // all maps use same layout
         m->layoutSection = mapNo; // but different sections of it
 
@@ -489,15 +494,19 @@ void laik_map_set_allocation(Laik_Mapping* m,
     assert(m->base == 0);
 
     // count should be number of indexes in required range
-    if (!laik_is_layout_variable(m->layout)) {
+    if (!laik_is_layout_variable(m->layout) && !laik_is_layout_vector(m->layout)) {
         assert(m->count == laik_range_size(&(m->requiredRange)));
         assert(size >=  m->count * m->data->elemsize);
     } else {
         // variable layout: size is nnz * elemsize; just require non-zero
         assert(size > 0);
     }
-    // make sure provided memory buffer is large enough
-    assert(size >=  m->count * m->data->elemsize);
+
+    // For variable layout, m->count is a count of logical indices (boundaries/rows),
+    // and does not correlate with allocated element count (nnz). Don't assert size
+    // against m->count here.
+    if (!laik_is_layout_variable(m->layout) && !laik_is_layout_vector(m->layout))
+        assert(size >=  m->count * m->data->elemsize);
 
     // allocated size/count is same as size/count of required range
     m->allocCount = m->count;
@@ -509,6 +518,82 @@ void laik_map_set_allocation(Laik_Mapping* m,
 
     // use given allocator for deallocation
     m->allocator = a;
+}
+
+
+static
+void allocateMappings_variable_compact(Laik_MappingList* toList, Laik_SwitchStat* ss)
+{
+    assert(toList);
+    assert(toList->count > 0);
+    assert(toList->res == 0);
+    assert(laik_is_layout_variable(toList->layout));
+
+    Laik_Mapping* baseMap = &(toList->map[0]);
+    Laik_Data* d = baseMap->data;
+    uint64_t total_nnz = 0;
+    for (int i = 0; i < toList->count; i++) {
+        total_nnz += laik_variable_layout_map_nnz(toList->layout, i);
+    }
+    if (total_nnz == 0) return;
+
+    uint64_t nnz0 = laik_variable_layout_map_nnz(toList->layout, 0);
+
+    uint64_t size = total_nnz * d->elemsize;
+    char* start = 0;
+    if (baseMap->base) {
+        // map 0 is already backed (e.g. by laik_data_provide_memory)
+        assert(baseMap->start);
+        assert(baseMap->capacity > 0);
+        if (baseMap->capacity < size) {
+            laik_log(LAIK_LL_Panic,
+                     "Provided memory too small for compact variable layout "
+                     "(data '%s', need %llu B, have %llu B)",
+                     d->name,
+                     (unsigned long long) size,
+                     (unsigned long long) baseMap->capacity);
+            exit(1);
+        }
+        start = baseMap->start;
+    }
+    else {
+        laik_switchstat_malloc(ss, size);
+
+        Laik_Allocator* a = baseMap->allocator;
+        assert(a != 0);
+        assert(a->malloc != 0);
+        start = (a->malloc)(d, size);
+        if (!start) {
+            laik_log(LAIK_LL_Panic,
+                     "Out of memory allocating compact memory for variable layout "
+                     "(data '%s', size %llu)",
+                     d->name, (unsigned long long int) size);
+            exit(1);
+        }
+
+        // The base map owns the allocation.
+        laik_map_set_allocation(baseMap, start, size, a);
+    }
+
+    baseMap->allocCount = nnz0;
+
+    // All other maps share the same backing allocation; their layout section
+    // uses the mapping's base pointer to point at the right slice.
+    uint64_t elem_off = laik_variable_layout_map_nnz(toList->layout, 0);
+    for (int i = 1; i < toList->count; i++) {
+        Laik_Mapping* m = &(toList->map[i]);
+        assert(m->base == 0);
+        m->start = start;
+        m->base = baseMap->start + elem_off * d->elemsize;
+        m->capacity = baseMap->capacity;
+        m->allocatedRange = m->requiredRange;
+        uint64_t nnz_i = laik_variable_layout_map_nnz(toList->layout, i);
+        m->allocCount = nnz_i;
+        elem_off += nnz_i;
+        m->baseMapping = baseMap;
+        // prevent double-free
+        m->allocator = 0;
+    }
 }
 
 
@@ -524,25 +609,18 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     // number of bytes to allocate: no space around required indexes
     // uint64_t size = m->count * d->elemsize;
     Laik_Range requiredRange = m->requiredRange;
-    // Compute offsets once
-    int64_t offFrom = l->offset(l, m->layoutSection, &requiredRange.from);
-    int64_t offTo   = l->offset(l, m->layoutSection, &requiredRange.to);
-
-    uint64_t nnz    = (uint64_t)(offTo - offFrom);
-    uint64_t size   = nnz * d->elemsize;
-
-    fprintf(stderr,
-            "DEBUG allocateMap: data=%s mapNo=%d "
-            "range=[%lld,%lld) offFrom=%lld offTo=%lld "
-            "count=%llu elemsize=%u sizeBytes=%llu\n",
-            d->name, m->mapNo,
-            (long long)requiredRange.from.i[0],
-            (long long)requiredRange.to.i[0],
-            (long long)offFrom,
-            (long long)offTo,
-            (unsigned long long)m->count,
-            d->elemsize,
-            (unsigned long long)size);
+    uint64_t nnz = 0;
+    uint64_t size = 0;
+    if (laik_is_layout_vector(m->layout)) {
+        nnz = laik_vector_layout_total(m->layout);
+        size = nnz * d->elemsize;
+    } else {
+        // Compute offsets once
+        int64_t offFrom = l->offset(l, m->layoutSection, &requiredRange.from);
+        int64_t offTo   = l->offset(l, m->layoutSection, &requiredRange.to);
+        nnz    = (uint64_t)(offTo - offFrom);
+        size   = nnz * d->elemsize;
+    }
     laik_switchstat_malloc(ss, size);
 
     // use the allocator of the mapping
@@ -564,6 +642,9 @@ void laik_allocateMap(Laik_Mapping* m, Laik_SwitchStat* ss)
     // for variable layout, allocCount must reflect nnz
     if (laik_is_layout_variable(m->layout)) {
         m->allocCount = nnz;
+    }
+    if (laik_is_layout_vector(m->layout)) {
+        m->allocCount = laik_vector_layout_total(m->layout);
     }
 
     laik_log(1, "allocateMap: for '%s'/%d: %llu x %d (%llu B) at %p",
@@ -760,30 +841,53 @@ void initMaps(Laik_Transition* t,
         int to = s->to.i[0];
         int elemCount = to - from;
 
-        char* toBase = toMap->base;
-        assert(from >= toMap->requiredRange.from.i[0]);
-        toBase += (from - toMap->requiredRange.from.i[0]) * d->elemsize;
+        if (laik_is_layout_vector(toMap->layout)) {
+            if (!d->type->init) {
+                laik_log(LAIK_LL_Panic,
+                         "Need initialization function for type '%s'. Not set!",
+                         d->type->name);
+                assert(0);
+            }
+            if (ss)
+                ss->initedBytes += elemCount * d->elemsize;
+            for (int g = from; g < to; ++g) {
+                Laik_Index idx;
+                laik_index_init(&idx, g, 0, 0);
+                int64_t off = toMap->layout->offset(toMap->layout, toMap->layoutSection, &idx);
+                char* toBase = toMap->start + off * d->elemsize;
+                (d->type->init)(toBase, 1, op->redOp);
+            }
+        } else {
+            char* toBase = toMap->base;
+            assert(from >= toMap->requiredRange.from.i[0]);
+            toBase += (from - toMap->requiredRange.from.i[0]) * d->elemsize;
 
-        if (ss)
-            ss->initedBytes += elemCount * d->elemsize;
+            if (ss)
+                ss->initedBytes += elemCount * d->elemsize;
 
-        if (d->type->init)
-            (d->type->init)(toBase, elemCount, op->redOp);
-        else {
-            laik_log(LAIK_LL_Panic,
-                     "Need initialization function for type '%s'. Not set!",
-                     d->type->name);
-            assert(0);
+            if (d->type->init)
+                (d->type->init)(toBase, elemCount, op->redOp);
+            else {
+                laik_log(LAIK_LL_Panic,
+                         "Need initialization function for type '%s'. Not set!",
+                         d->type->name);
+                assert(0);
+            }
         }
 
-        laik_log(1, "init map for '%s' range/map %d/%d: %d entries in [%d;%d[ from %p\n",
-                 d->name, op->rangeNo, op->mapNo, elemCount, from, to, (void*) toBase);
+        laik_log(1, "init map for '%s' range/map %d/%d: %d entries in [%d;%d[\n",
+                 d->name, op->rangeNo, op->mapNo, elemCount, from, to);
     }
 }
 
 static
 void allocateMappings(Laik_MappingList* toList, Laik_SwitchStat* ss)
 {
+    if ((toList->count > 1) && laik_is_layout_variable(toList->layout)) {
+        allocateMappings_variable_compact(toList, ss);
+        return;
+    }
+
     for(int i = 0; i < toList->count; i++) {
         Laik_Mapping* map = &(toList->map[i]);
         if (map->base) continue;
@@ -1513,6 +1617,8 @@ Laik_Mapping* laik_get_map_1d(Laik_Data* d, int n, void** base, uint64_t* count)
     if (count) {
         if (laik_is_layout_variable(m->layout))
             *count = m->allocCount; // nnz for variable layout
+        else if (laik_is_layout_vector(m->layout))
+            *count = m->allocCount; // logical size for vector layout
         else
             *count = m->count;      // rows/contiguous element count otherwise
     }
