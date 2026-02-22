@@ -25,6 +25,11 @@
 #include <string.h>
 #include <stdio.h>
 
+struct _Laik_Layout_Var;
+struct _Laik_Layout_Vector;
+extern struct _Laik_Layout_Var* laik_is_layout_variable(Laik_Layout* l);
+extern struct _Laik_Layout_Vector* laik_is_layout_vector(Laik_Layout* l);
+
 static int aseq_id = 0;
 
 // create a new action sequence object, usable for the given LAIK instance
@@ -1859,6 +1864,27 @@ bool laik_aseq_sort_rounds(Laik_ActionSeq* as)
 
 
 
+static uint64_t laik_aseq_sum_elems_for_range(Laik_Mapping* map, Laik_Range* range)
+{
+    if (!map || !range) return 0;
+    int dims = range->space->dims;
+    Laik_Index it = range->from;
+    uint64_t elems = 0;
+    while (!laik_index_isEqual(dims, &it, &(range->to))) {
+        elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+        it.i[0]++;
+        if (dims > 1 && it.i[0] >= range->to.i[0]) {
+            it.i[0] = range->from.i[0];
+            it.i[1]++;
+            if (dims > 2 && it.i[1] >= range->to.i[1]) {
+                it.i[1] = range->from.i[1];
+                it.i[2]++;
+            }
+        }
+    }
+    return elems;
+}
+
 /*
  * transform MapPackAndSend/MapRecvAndUnpack into simple Send/Recv actions
  * if mapping is known and direct send/recv is possible
@@ -1900,7 +1926,9 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
                 assert(aa->fromMapNo < tc->fromList->count);
             fromMap = tc->fromList ? &(tc->fromList->map[aa->fromMapNo]) : 0;
 
-            if (fromMap && (aa->range->space->dims == 1)) {
+            if (fromMap && (aa->range->space->dims == 1) &&
+                !laik_is_layout_variable(fromMap->layout) &&
+                !laik_is_layout_vector(fromMap->layout)) {
                 // mapping known and 1d: can use direct send/recv
 
                 // FIXME: this assumes lexicographical layout
@@ -1925,7 +1953,13 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
             }
             else {
                 // split off packing and sending, using a buffer of required size
-                int bufID = laik_aseq_addBufReserve(as, aa->count * elemsize, -1);
+                uint64_t elem_count = (uint64_t)aa->count;
+                if (fromMap)
+                    elem_count = laik_aseq_sum_elems_for_range(fromMap, aa->range);
+                assert(elem_count < (UINT64_C(1)<<32));
+                uint64_t byte_count = elem_count * elemsize;
+                assert(byte_count < (UINT64_C(1)<<32));
+                int bufID = laik_aseq_addBufReserve(as, (unsigned int)byte_count, -1);
                 if (fromMap)
                     laik_aseq_addPackToRBuf(as, 3 * a->round,
                                             fromMap, aa->range, bufID, 0);
@@ -1934,7 +1968,7 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
                                                aa->fromMapNo, aa->range, bufID, 0);
 
                 laik_aseq_addRBufSend(as, 3 * a->round + 1,
-                                      bufID, 0, aa->count, aa->to_rank);
+                                      bufID, 0, (unsigned int)elem_count, aa->to_rank);
             }
             handled = true;
             break;
@@ -1947,7 +1981,9 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
                 assert(aa->toMapNo < tc->toList->count);
             toMap = tc->toList ? &(tc->toList->map[aa->toMapNo]) : 0;
 
-            if (toMap && (aa->range->space->dims == 1)) {
+            if (toMap && (aa->range->space->dims == 1) &&
+                !laik_is_layout_variable(toMap->layout) &&
+                !laik_is_layout_vector(toMap->layout)) {
                 // mapping known and 1d: can use direct send/recv
 
                 // FIXME: this assumes lexicographical layout
@@ -1972,9 +2008,15 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
             }
             else {
                 // split off receiving and unpacking, using buffer of required size
-                int bufID = laik_aseq_addBufReserve(as, aa->count * elemsize, -1);
+                uint64_t elem_count = (uint64_t)aa->count;
+                if (toMap)
+                    elem_count = laik_aseq_sum_elems_for_range(toMap, aa->range);
+                assert(elem_count < (UINT64_C(1)<<32));
+                uint64_t byte_count = elem_count * elemsize;
+                assert(byte_count < (UINT64_C(1)<<32));
+                int bufID = laik_aseq_addBufReserve(as, (unsigned int)byte_count, -1);
                 laik_aseq_addRBufRecv(as, 3 * a->round + 1,
-                                      bufID, 0, aa->count, aa->from_rank);
+                                      bufID, 0, (unsigned int)elem_count, aa->from_rank);
                 if (toMap)
                     laik_aseq_addUnpackFromRBuf(as, 3 * a->round + 2,
                                                 bufID, 0, toMap, aa->range);
@@ -2574,7 +2616,10 @@ void laik_exec_pack(Laik_BackendAction* a, Laik_Mapping* map)
 {
     Laik_Index idx = a->range->from;
     int dims = a->range->space->dims;
-    unsigned int byteCount = a->count * map->data->elemsize;
+    uint64_t elem_count = laik_aseq_sum_elems_for_range(map, a->range);
+    uint64_t byte_count = elem_count * map->data->elemsize;
+    assert(byte_count < (UINT64_C(1)<<32));
+    unsigned int byteCount = (unsigned int)byte_count;
     unsigned int packed = (map->layout->pack)(map, a->range, &idx, a->toBuf, byteCount);
     assert(packed == a->count);
     assert(laik_index_isEqual(dims, &idx, &(a->range->to)));
@@ -2585,7 +2630,10 @@ void laik_exec_unpack(Laik_BackendAction* a, Laik_Mapping* map)
 {
     Laik_Index idx = a->range->from;
     int dims = a->range->space->dims;
-    unsigned int byteCount = a->count * map->data->elemsize;
+    uint64_t elem_count = laik_aseq_sum_elems_for_range(map, a->range);
+    uint64_t byte_count = elem_count * map->data->elemsize;
+    assert(byte_count < (UINT64_C(1)<<32));
+    unsigned int byteCount = (unsigned int)byte_count;
     unsigned int unpacked = (map->layout->unpack)(map, a->range, &idx,
                                                   a->fromBuf, byteCount);
     assert(unpacked == a->count);
