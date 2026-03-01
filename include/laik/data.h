@@ -99,6 +99,9 @@ void laik_free(Laik_Data*);
 
 typedef struct _Laik_Data_Parameters {
     Laik_Data* prefix_row_data; // CSR row-pointer (size+1), used by variable layout
+    // Optional: explicit segment list for variable layout (disjoint ranges)
+    const Laik_Range* var_ranges;    // length = var_range_count
+    uint64_t          var_range_count;
     // Vector layout parameters (compact local + external mapping)
     const int64_t* vector_local_indices;    // length = vector_local_count
     uint64_t       vector_local_count;      // number of locally owned indices

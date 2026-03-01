@@ -61,6 +61,14 @@ typedef struct {
     bool didInit;
 } MPIData;
 
+static void mpi_op_any_fn(void* invec, void* inoutvec, int* len, MPI_Datatype* datatype)
+{
+    int typesize = 0;
+    if (MPI_Type_size(*datatype, &typesize) != MPI_SUCCESS) return;
+    if (typesize <= 0 || !invec || !inoutvec || !len || *len <= 0) return;
+    memcpy(inoutvec, invec, (size_t)(*len) * (size_t)typesize);
+}
+
 typedef struct {
     MPI_Comm comm;
 } MPIGroupData;
@@ -74,6 +82,10 @@ static int mpi_reduce = 1;
 
 // LAIK_MPI_ASYNC: convert send/recv to isend/irecv? Default: Yes
 static int mpi_async = 1;
+
+// Custom op to select any input for LAIK_RO_Any/LAIK_RO_Single.
+static MPI_Op mpi_op_any = MPI_OP_NULL;
+static int mpi_op_any_inited = 0;
 
 
 //----------------------------------------------------------------
@@ -331,6 +343,12 @@ Laik_Instance* laik_init_mpi(int* argc, char*** argv)
     gd->comm = ownworld;
     d->comm = ownworld;
 
+    if (!mpi_op_any_inited) {
+        int err2 = MPI_Op_create(mpi_op_any_fn, 1, &mpi_op_any);
+        if (err2 != MPI_SUCCESS) laik_mpi_panic(err2);
+        mpi_op_any_inited = 1;
+    }
+
     int size, rank;
     err = MPI_Comm_size(d->comm, &size);
     if (err != MPI_SUCCESS) laik_mpi_panic(err);
@@ -392,6 +410,12 @@ static
 void laik_mpi_finalize(Laik_Instance* inst)
 {
     assert(inst == mpi_instance);
+
+    if (mpi_op_any_inited && mpi_op_any != MPI_OP_NULL) {
+        MPI_Op_free(&mpi_op_any);
+        mpi_op_any = MPI_OP_NULL;
+        mpi_op_any_inited = 0;
+    }
 
     if (mpiData(mpi_instance)->didInit) {
         int err = MPI_Finalize();
@@ -464,6 +488,11 @@ MPI_Op getMPIOp(Laik_ReductionOperation redOp)
     case LAIK_RO_Max:  mpiRedOp = MPI_MAX; break;
     case LAIK_RO_And:  mpiRedOp = MPI_LAND; break;
     case LAIK_RO_Or:   mpiRedOp = MPI_LOR; break;
+    case LAIK_RO_Any:
+    case LAIK_RO_Single:
+        // Pick any input value deterministically with a custom op.
+        mpiRedOp = mpi_op_any;
+        break;
     default: assert(0);
     }
     return mpiRedOp;

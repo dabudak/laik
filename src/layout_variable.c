@@ -61,8 +61,52 @@ uint64_t laik_variable_layout_map_nnz(Laik_Layout* l, int mapNo)
 {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
     assert(mapNo >= 0 && mapNo < l->map_count);
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    if ((l->map_count == 1) && (seg_count > 1)) {
+        uint64_t total = 0;
+        for (int i = 0; i < seg_count; ++i)
+            total += vl->e[i].nnz;
+        return total;
+    }
     return vl->e[mapNo].nnz;
 }
+static int find_segment(Laik_Layout_Var* vl, int64_t g)
+{
+    for (int sec = 0; vl->e[sec].count != 0; ++sec) {
+        int64_t start = vl->e[sec].first_boundary;
+        int64_t end_excl = start + (int64_t)vl->e[sec].count - 1;
+        if (g >= start && g < end_excl) return sec;
+    }
+    return -1;
+}
+
+static int find_segment_end(Laik_Layout_Var* vl, int64_t g)
+{
+    for (int sec = 0; vl->e[sec].count != 0; ++sec) {
+        int64_t start = vl->e[sec].first_boundary;
+        int64_t end_excl = start + (int64_t)vl->e[sec].count - 1;
+        if (g == end_excl) return sec;
+    }
+    return -1;
+}
+
+static int64_t last_segment_end_excl(Laik_Layout_Var* vl, int* out_sec)
+{
+    int last_sec = -1;
+    int64_t last_end_excl = 0;
+    for (int sec = 0; vl->e[sec].count != 0; ++sec) {
+        int64_t start = vl->e[sec].first_boundary;
+        int64_t end_excl = start + (int64_t)vl->e[sec].count - 1;
+        if (last_sec < 0 || end_excl > last_end_excl) {
+            last_sec = sec;
+            last_end_excl = end_excl;
+        }
+    }
+    if (out_sec) *out_sec = last_sec;
+    return last_end_excl;
+}
+
 
 
 static char* describe_variable(Laik_Layout* l) {
@@ -76,7 +120,13 @@ unsigned int pack_variable(Laik_Mapping* m, Laik_Range* range,
                            Laik_Index* idx, char* buf, unsigned int size)
 {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) m->layout;
-    Var_Entry* e = &vl->e[m->layoutSection];
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    int sec = (seg_count == m->layout->map_count)
+              ? m->layoutSection
+              : find_segment(vl, idx->i[0]);
+    if (sec < 0) return 0;
+    Var_Entry* e = &vl->e[sec];
 
     int64_t g = idx->i[0];
     int64_t g_to = range->to.i[0];
@@ -107,7 +157,13 @@ unsigned int unpack_variable(Laik_Mapping* m, Laik_Range* range,
                              Laik_Index* idx, char* buf, unsigned int size)
 {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) m->layout;
-    Var_Entry* e = &vl->e[m->layoutSection];
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    int sec = (seg_count == m->layout->map_count)
+              ? m->layoutSection
+              : find_segment(vl, idx->i[0]);
+    if (sec < 0) return 0;
+    Var_Entry* e = &vl->e[sec];
 
     int64_t g = idx->i[0];
     int64_t g_to = range->to.i[0];
@@ -137,13 +193,24 @@ static
 void copy_variable(Laik_Range* range, Laik_Mapping* from, Laik_Mapping* to)
 {
     Laik_Layout_Var* vlf = (Laik_Layout_Var*) from->layout;
-    Var_Entry* ef = &vlf->e[from->layoutSection];
     Laik_Layout_Var* vlt = (Laik_Layout_Var*) to->layout;
-    Var_Entry* et = &vlt->e[to->layoutSection];
 
     int64_t g_from = range->from.i[0];
     int64_t g_to   = range->to.i[0];
     while (g_from < g_to) {
+        int seg_count_f = 0;
+        while (vlf->e[seg_count_f].count != 0) seg_count_f++;
+        int seg_count_t = 0;
+        while (vlt->e[seg_count_t].count != 0) seg_count_t++;
+        int sec_f = (seg_count_f == from->layout->map_count)
+                    ? from->layoutSection
+                    : find_segment(vlf, g_from);
+        int sec_t = (seg_count_t == to->layout->map_count)
+                    ? to->layoutSection
+                    : find_segment(vlt, g_from);
+        assert(sec_f >= 0 && sec_t >= 0);
+        Var_Entry* ef = &vlf->e[sec_f];
+        Var_Entry* et = &vlt->e[sec_t];
         int64_t li_f = g_from - ef->first_boundary;
         int64_t li_t = g_from - et->first_boundary;
         uint64_t nnz_row = (uint64_t)(ef->row_ptr[li_f + 1] - ef->row_ptr[li_f]);
@@ -160,6 +227,16 @@ void copy_variable(Laik_Range* range, Laik_Mapping* from, Laik_Mapping* to)
 static int section_variable(Laik_Layout* l, Laik_Index* idx) {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
     int64_t g = idx->i[0];
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    // Single map with disjoint segments: map everything to section 0.
+    if ((l->map_count == 1) && (seg_count > 1)) {
+        int sec = find_segment(vl, g);
+        if (sec >= 0) return 0;
+        if (find_segment_end(vl, g) >= 0) return 0;
+        return -1;
+    }
+
     // Rows are addressed in a half-open range [from,to).
     // Each section stores (rows+1) boundaries, so the last boundary index
     // equals the exclusive end row index and must not be treated as a row.
@@ -205,7 +282,24 @@ static bool reuse_variable(Laik_Layout* l, int n, Laik_Layout* o, int no){
 static int64_t offset_variable(Laik_Layout* l, int sec, Laik_Index* idx)
 {
     Laik_Layout_Var* vl = (Laik_Layout_Var*) l;
-    Var_Entry* e = &vl->e[sec];
+    Var_Entry* e = 0;
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    if ((l->map_count == 1) && (seg_count > 1)) {
+        int seg = find_segment(vl, idx->i[0]);
+        if (seg < 0) {
+            int end_sec = find_segment_end(vl, idx->i[0]);
+            if (end_sec >= 0) {
+                Var_Entry* le = &vl->e[end_sec];
+                int64_t li = (int64_t)(le->count - 1);
+                return (int64_t)le->base_off + (le->row_ptr[li] - le->row_ptr[0]);
+            }
+            return 0;
+        }
+        e = &vl->e[seg];
+    } else {
+        e = &vl->e[sec];
+    }
     if (!e->row_ptr) return 0;
     int64_t li = idx->i[0] - e->first_boundary;
     if (li == (int64_t)(e->count - 1)) // sentinel (exclusive end)
@@ -220,7 +314,16 @@ static uint64_t size_variable(Laik_Layout* l, int n, Laik_Index* idx)
     Laik_Layout_Var* vl = laik_is_layout_variable(l);
     assert(vl);
     assert(n >= 0 && n < l->map_count);
-    Var_Entry* e = &vl->e[n];
+    Var_Entry* e = 0;
+    int seg_count = 0;
+    while (vl->e[seg_count].count != 0) seg_count++;
+    if ((l->map_count == 1) && (seg_count > 1)) {
+        int seg = find_segment(vl, idx->i[0]);
+        assert(seg >= 0);
+        e = &vl->e[seg];
+    } else {
+        e = &vl->e[n];
+    }
     assert(e->row_ptr);
     int64_t li = idx->i[0] - e->first_boundary;
     // boundaries array has count = rows + 1 entries; valid rows are [0, count-2]
@@ -238,15 +341,23 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
     Laik_Data* prefix = params->prefix_row_data;
     assert(prefix->activeMappings);
 
+    int segment_count = n;
+    const Laik_Range* seg_ranges = ranges;
+    if ((n == 1) && (params->var_range_count > 0) && params->var_ranges) {
+        segment_count = (int)params->var_range_count;
+        seg_ranges = params->var_ranges;
+    }
+
     uint64_t total_boundaries = 0;
-    for (int i = 0; i < n; ++i) {
-        int64_t from = ranges[i].from.i[0];
-        int64_t to   = ranges[i].to.i[0];
+    for (int i = 0; i < segment_count; ++i) {
+        int64_t from = seg_ranges[i].from.i[0];
+        int64_t to   = seg_ranges[i].to.i[0];
         assert(to > from);
         total_boundaries += (uint64_t)(to - from + 1);
     }
 
-    size_t bytes = sizeof(Laik_Layout_Var) + ((size_t)n) * sizeof(Var_Entry) + ((size_t)total_boundaries) * sizeof(int64_t);
+    size_t entry_count = (size_t)segment_count + 1; // sentinel entry with count==0
+    size_t bytes = sizeof(Laik_Layout_Var) + entry_count * sizeof(Var_Entry) + ((size_t)total_boundaries) * sizeof(int64_t);
     Laik_Layout_Var* vl = (Laik_Layout_Var*) malloc(bytes);
     assert(vl);
 
@@ -261,15 +372,15 @@ Laik_Layout* laik_new_layout_variable(int n, Laik_Range* ranges, Laik_Data_Param
                      copy_variable, // generic copy;
                      size_variable);  
 
-    memset(vl->e, 0, ((size_t)n) * sizeof(Var_Entry));
+    memset(vl->e, 0, entry_count * sizeof(Var_Entry));
 
-    int64_t* boundary_store = (int64_t*) (vl->e + n);
+    int64_t* boundary_store = (int64_t*) (vl->e + entry_count);
     uint64_t boundary_off = 0;
 
     uint64_t total = 0;
-    for (int i = 0; i < n; ++i) {
-        int64_t from = ranges[i].from.i[0];
-        int64_t to   = ranges[i].to.i[0];
+    for (int i = 0; i < segment_count; ++i) {
+        int64_t from = seg_ranges[i].from.i[0];
+        int64_t to   = seg_ranges[i].to.i[0];
         assert(to > from);
 
         // prefix_row_data is distributed and can have multiple mappings (cycles>1).

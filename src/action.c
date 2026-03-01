@@ -2028,59 +2028,102 @@ bool laik_aseq_flattenPacking(Laik_ActionSeq* as)
             break;
         }
 
-        case LAIK_AT_MapGroupReduce:
+        case LAIK_AT_MapGroupReduce: {
 
-            // TODO: for >1 dims, use pack/unpack with buffer
+            bool inputHere = laik_trans_isInGroup(tc->transition, ba->inputGroup, myid);
+            bool outputHere = laik_trans_isInGroup(tc->transition, ba->outputGroup, myid);
+
+            // Try direct addressing only for 1d lex layouts.
             if (ba->range->space->dims == 1) {
-                char *fromBase, *toBase;
+                char *fromBase = 0, *toBase = 0;
+                bool direct_ok = true;
 
-                // if current task is input, fromBase should be allocated
-                if (laik_trans_isInGroup(tc->transition, ba->inputGroup, myid)) {
+                if (inputHere) {
                     assert(tc->fromList);
                     assert(ba->fromMapNo < tc->fromList->count);
                     fromMap = &(tc->fromList->map[ba->fromMapNo]);
                     fromBase = fromMap ? fromMap->base : 0;
-                    assert(fromBase != 0);
-                }
-                else {
-                    fromBase = 0;
-                    fromMap = 0;
+                    if (!fromBase || laik_is_layout_variable(fromMap->layout) ||
+                        laik_is_layout_vector(fromMap->layout)) {
+                        direct_ok = false;
+                    }
                 }
 
-                // if current task is receiver, toBase should be allocated
-                if (laik_trans_isInGroup(tc->transition, ba->outputGroup, myid)) {
+                if (outputHere) {
                     assert(tc->toList);
                     assert(ba->toMapNo < tc->toList->count);
                     toMap = &(tc->toList->map[ba->toMapNo]);
                     toBase = toMap ? toMap->base : 0;
-                    assert(toBase != 0);
-                }
-                else {
-                    toBase = 0; // no interest in receiving anything
-                    toMap = 0;
-                }
-
-                // FIXME: this assumes lexicographical layout
-                from = ba->range->from.i[0];
-                to   = ba->range->to.i[0];
-                assert(to > from);
-                count = (unsigned int)(to - from);
-
-                if (fromBase) {
-                    assert(from >= fromMap->requiredRange.from.i[0]);
-                    fromBase += (from - fromMap->requiredRange.from.i[0]) * elemsize;
-                }
-                if (toBase) {
-                    assert(from >= toMap->requiredRange.from.i[0]);
-                    toBase += (from - toMap->requiredRange.from.i[0]) * elemsize;
+                    if (!toBase || laik_is_layout_variable(toMap->layout) ||
+                        laik_is_layout_vector(toMap->layout)) {
+                        direct_ok = false;
+                    }
                 }
 
-                laik_aseq_addGroupReduce(as, 3 * a->round + 1,
-                                         ba->inputGroup, ba->outputGroup,
-                                         fromBase, toBase, count, ba->redOp);
+                if (direct_ok) {
+                    from = ba->range->from.i[0];
+                    to   = ba->range->to.i[0];
+                    assert(to > from);
+                    count = (unsigned int)(to - from);
+
+                    if (fromBase && fromMap) {
+                        assert(from >= fromMap->requiredRange.from.i[0]);
+                        fromBase += (from - fromMap->requiredRange.from.i[0]) * elemsize;
+                    }
+                    if (toBase && toMap) {
+                        assert(from >= toMap->requiredRange.from.i[0]);
+                        toBase += (from - toMap->requiredRange.from.i[0]) * elemsize;
+                    }
+
+                    laik_aseq_addGroupReduce(as, 3 * a->round + 1,
+                                             ba->inputGroup, ba->outputGroup,
+                                             fromBase, toBase, count, ba->redOp);
+                    handled = true;
+                }
+            }
+
+            if (!handled) {
+                // Fallback for non-lex layouts: pack/unpack through a buffer.
+                uint64_t elem_count = 0;
+                if (inputHere) {
+                    assert(tc->fromList);
+                    assert(ba->fromMapNo < tc->fromList->count);
+                    fromMap = &(tc->fromList->map[ba->fromMapNo]);
+                    elem_count = laik_aseq_sum_elems_for_range(fromMap, ba->range);
+                } else if (outputHere) {
+                    assert(tc->toList);
+                    assert(ba->toMapNo < tc->toList->count);
+                    toMap = &(tc->toList->map[ba->toMapNo]);
+                    elem_count = laik_aseq_sum_elems_for_range(toMap, ba->range);
+                }
+                if (elem_count == 0) elem_count = (uint64_t)ba->count;
+                assert(elem_count > 0);
+                assert(elem_count < (UINT64_C(1)<<32));
+                uint64_t byte_count = elem_count * elemsize;
+                assert(byte_count < (UINT64_C(1)<<32));
+
+                int bufID = laik_aseq_addBufReserve(as, (unsigned int)byte_count, -1);
+
+                if (inputHere) {
+                    laik_aseq_addMapPackToRBuf(as, 3 * a->round,
+                                               ba->fromMapNo, ba->range,
+                                               bufID, 0);
+                }
+
+                laik_aseq_addRBufGroupReduce(as, 3 * a->round + 1,
+                                             ba->inputGroup, ba->outputGroup,
+                                             bufID, 0, (unsigned int)elem_count,
+                                             ba->redOp);
+
+                if (outputHere) {
+                    laik_aseq_addMapUnpackFromRBuf(as, 3 * a->round + 2,
+                                                   bufID, 0, ba->toMapNo,
+                                                   ba->range);
+                }
                 handled = true;
             }
             break;
+        }
 
         default: break;
         }

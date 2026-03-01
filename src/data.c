@@ -183,6 +183,7 @@ Laik_Data* laik_new_data(Laik_Space* space, Laik_Type* type)
     d->backend_data = 0;
     d->activePartitioning = 0;
     d->activeMappings = 0;
+    d->params = 0;
     assert(laik_allocator_def);
     d->allocator = laik_allocator_def; // malloc/free + reuse if possible
     d->layout_factory = laik_new_layout_lex; // by default, use lex layouts
@@ -384,10 +385,52 @@ Laik_MappingList* prepareMaps(Laik_Data* d, Laik_Partitioning* p)
              n, d->name, p->name);
 
     // create layout
-    Laik_Range* ranges = coveringRanges(n, list, myid);
+    Laik_Range* ranges = 0;
+    Laik_Range* var_ranges = 0;
+    uint64_t var_range_count = 0;
+
+    // If variable layout is requested, pack disjoint ranges into one map.
+    if ((sn > 0) && (d->layout_factory == laik_new_layout_variable)) {
+        // Force one map and keep explicit segment list for layout creation.
+        n = 1;
+        ranges = (Laik_Range*)malloc(sizeof(Laik_Range));
+        assert(ranges);
+        bool first = true;
+        for (unsigned int o = list->off[myid]; o < list->off[myid+1]; ++o) {
+            if (first) {
+                ranges[0] = list->trange[o].range;
+                first = false;
+            } else {
+                laik_range_expand(&ranges[0], &(list->trange[o].range));
+            }
+            // Make sure all local ranges use map 0 for transitions.
+            list->trange[o].mapNo = 0;
+        }
+
+        var_range_count = (uint64_t)sn;
+        var_ranges = (Laik_Range*)malloc((size_t)sn * sizeof(Laik_Range));
+        assert(var_ranges);
+        unsigned int idx = 0;
+        for (unsigned int o = list->off[myid]; o < list->off[myid+1]; ++o, ++idx) {
+            var_ranges[idx] = list->trange[o].range;
+        }
+
+        if (d->params) {
+            d->params->var_ranges = var_ranges;
+            d->params->var_range_count = var_range_count;
+        }
+    } else {
+        ranges = coveringRanges(n, list, myid);
+    }
 
     // add another parameters struct parameter to the layout_factory
     Laik_Layout* layout = (n>0) ? (d->layout_factory)(n, ranges, d->params) : 0;
+
+    if (d->params) {
+        d->params->var_ranges = 0;
+        d->params->var_range_count = 0;
+    }
+    free(var_ranges);
     Laik_MappingList* ml = laik_mappinglist_new(d, n, layout);
 
     for(int mapNo = 0; mapNo < n; mapNo++) {
