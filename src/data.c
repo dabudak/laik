@@ -1656,7 +1656,12 @@ Laik_Mapping* laik_get_map_1d(Laik_Data* d, int n, void** base, uint64_t* count)
         return 0;
     }
 
-    if (base) *base = m->base;
+    if (base) {
+        if (laik_is_layout_vector(m->layout))
+            *base = m->start;
+        else
+            *base = m->base;
+    }
     if (count) {
         if (laik_is_layout_variable(m->layout))
             *count = m->allocCount; // nnz for variable layout

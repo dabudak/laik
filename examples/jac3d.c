@@ -86,9 +86,9 @@ void setBoundary(int size, Laik_Partitioning *pWrite, Laik_Data* dWrite)
 
 //--------------------------------------------------------------
 // custom layout factory (used with '-l'): just return lex layout
-static Laik_Layout* mylayout_new(int n, Laik_Range* range)
+static Laik_Layout* mylayout_new(int n, Laik_Range* range, Laik_Data_Parameters* params)
 {
-    return laik_new_layout_lex(n, range);
+    return laik_new_layout_lex(n, range, params);
 }
 
 
