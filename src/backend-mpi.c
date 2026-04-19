@@ -236,7 +236,8 @@ bool laik_mpi_asyncSendRecv(Laik_ActionSeq* as)
     Laik_Action* a = as->action;
     for(unsigned int i = 0; i < as->actionCount; i++, a = nextAction(a)) {
         if (a->round > maxround) maxround = a->round;
-        if ((a->type == LAIK_AT_BufRecv) || (a->type == LAIK_AT_BufSend))
+        if ((a->type == LAIK_AT_BufRecv) || (a->type == LAIK_AT_BufSend) ||
+            (a->type == LAIK_AT_RBufRecv) || (a->type == LAIK_AT_RBufSend))
             count++;
     }
 
@@ -262,10 +263,32 @@ bool laik_mpi_asyncSendRecv(Laik_ActionSeq* as)
             break;
         }
 
+        case LAIK_AT_RBufSend: {
+            Laik_A_RBufSend* aa = (Laik_A_RBufSend*) a;
+            assert(aa->bufID < ASEQ_BUFFER_MAX);
+            laik_mpi_addMpiIsend(as, a->round + 1,
+                                 as->buf[aa->bufID] + aa->offset,
+                                 aa->count, aa->to_rank, req_id);
+            laik_mpi_addMpiWait(as, maxround + 2, req_id);
+            req_id++;
+            break;
+        }
+
         case LAIK_AT_BufRecv: {
             Laik_A_BufRecv* aa = (Laik_A_BufRecv*) a;
             laik_mpi_addMpiIrecv(as, 0,
                                  aa->buf, aa->count, aa->from_rank, req_id);
+            laik_mpi_addMpiWait(as, a->round + 1, req_id);
+            req_id++;
+            break;
+        }
+
+        case LAIK_AT_RBufRecv: {
+            Laik_A_RBufRecv* aa = (Laik_A_RBufRecv*) a;
+            assert(aa->bufID < ASEQ_BUFFER_MAX);
+            laik_mpi_addMpiIrecv(as, 0,
+                                 as->buf[aa->bufID] + aa->offset,
+                                 aa->count, aa->from_rank, req_id);
             laik_mpi_addMpiWait(as, a->round + 1, req_id);
             req_id++;
             break;

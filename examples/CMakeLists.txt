@@ -10,6 +10,7 @@ foreach (example
     "propagation1d"
     "propagation2d"
     "spmv"
+    "spmv_naive"
     "spmv2"
     "vsum"
     "vsum2"
@@ -37,6 +38,7 @@ if (cpp-examples)
             PRIVATE "laik"
         )
     endforeach ()
+
 endif ()
 
 # If OpenMP support is enabled, pass its flags to the examples supporting it.
