@@ -28,24 +28,21 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 // maximal size
-#define MAXSIZE 20
-
-static double getEW(Laik_Index* i, const void* d)
-{
-	const int size = *((const int*) d);
-	const int row = (int) i->i[0];
-
-	if (row < 0 || row >= size)
-		return 0.0;
-	return (double) row;
-}
+#define MAXSIZE 10000
 
 int main(int argc, char* argv[])
 {
 	Laik_Instance* inst = laik_init(&argc, &argv);
 	Laik_Group* world = laik_world(inst);
+	int rank = laik_myid(world);
+
+	const char* prof_file = getenv("LAIK_PROFILE_FILE");
+	int do_profile = (prof_file && prof_file[0] != '\0' && rank == 0);
+	if (do_profile)
+		laik_enable_profiling_file(inst, prof_file);
 
 	int size = 0;
 	if (argc > 1) size = atoi(argv[1]);
@@ -55,7 +52,8 @@ int main(int argc, char* argv[])
 
 	if (laik_myid(world) == 0) {
 		const uint64_t dense_elems = (uint64_t) MAXSIZE * (uint64_t) MAXSIZE;
-		const uint64_t active_nnz = (uint64_t) size * (uint64_t) (size - 1) / 2;
+		const uint64_t nnz_per_row = 30;
+		const uint64_t active_nnz = (uint64_t) size * nnz_per_row;
 		printf("Naive dense lex layout: %llu stored values (%.2f MB), active nnz %llu\n",
 			   (unsigned long long) dense_elems,
 			   (double) (dense_elems * sizeof(double)) / (1024.0 * 1024.0),
@@ -86,26 +84,42 @@ int main(int argc, char* argv[])
 		assert(ysize == (uint64_t) MAXSIZE);
 		assert(xsize == (uint64_t) MAXSIZE);
 
+		const uint64_t nnz_per_row = 30;
 		for (uint64_t row = 0; row < ysize; row++) {
-			for (uint64_t col = 0; col < xsize; col++) {
-				double value = 0.0;
-				if ((row < (uint64_t) size) && (col < row))
-					value = (double) (size - (int) row);
-				mat[row * ystride + col] = value;
+			uint64_t base = row * ystride;
+			for (uint64_t col = 0; col < xsize; col++)
+				mat[base + col] = 0.0;
+			if (row < (uint64_t) size) {
+				for (uint64_t k = 0; k < nnz_per_row; ++k) {
+					uint64_t col = (row + k) % (uint64_t) size;
+					mat[base + col] = 1.0;
+				}
 			}
 		}
 	}
 
-	// Partition rows by the original work estimate, then copy that row
-	// distribution into the first matrix dimension.
+	// Partition rows by the original work estimate.
 	Laik_Partitioner* row_pr = laik_new_block_partitioner1();
-	laik_set_index_weight(row_pr, getEW, &size);
 	Laik_Partitioning* row_p = laik_new_partitioning(row_pr, world, rows_space, 0);
 	laik_switchto_partitioning(resD, row_p, LAIK_DF_None, LAIK_RO_None);
 
-	Laik_Partitioner* mat_copy_pr = laik_new_copy_partitioner(0, 1);
-	Laik_Partitioning* mat_p = laik_new_partitioning(mat_copy_pr, world, matrix_space, row_p);
+	// Partition matrix rows directly (dimension 1), without copy partitioning.
+	Laik_Partitioner* mat_pr = laik_new_block_partitioner(1, 1, 0, 0, 0);
+	Laik_Partitioning* mat_p = laik_new_partitioning(mat_pr, world, matrix_space, 0);
+	if (do_profile) {
+		laik_profile_printf("# switch matD master->mat_p\n");
+		laik_reset_profiling(inst);
+	}
 	laik_switchto_partitioning(matD, mat_p, LAIK_DF_Preserve, LAIK_RO_None);
+	if (do_profile)
+		laik_writeout_profile();
+
+	const char* sleep_env = getenv("SLEEP_AFTER_INIT");
+	if (sleep_env) {
+		int seconds = atoi(sleep_env);
+		if (seconds > 0)
+			sleep((unsigned int)seconds);
+	}
 
 	// First SpMV: compute local rows and gather regularly.
 	laik_set_phase(inst, 1, "1st SpmV", NULL);

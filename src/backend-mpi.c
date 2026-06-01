@@ -525,18 +525,34 @@ MPI_Op getMPIOp(Laik_ReductionOperation redOp)
 static uint64_t laik_mpi_sum_elems_for_range(Laik_Mapping* map, Laik_Range* range)
 {
     int dims = range->space->dims;
-    Laik_Index it = range->from;
     uint64_t elems = 0;
-    while (!laik_index_isEqual(dims, &it, &(range->to))) {
-        elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
-        // advance lexicographically within [from, to)
-        it.i[0]++;
-        if (dims > 1 && it.i[0] >= range->to.i[0]) {
-            it.i[0] = range->from.i[0];
-            it.i[1]++;
-            if (dims > 2 && it.i[1] >= range->to.i[1]) {
-                it.i[1] = range->from.i[1];
-                it.i[2]++;
+
+    if (dims == 1) {
+        for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+            Laik_Index it;
+            laik_index_init(&it, i0, 0, 0);
+            elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+        }
+        return elems;
+    }
+
+    if (dims == 2) {
+        for (int64_t i1 = range->from.i[1]; i1 < range->to.i[1]; i1++) {
+            for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+                Laik_Index it;
+                laik_index_init(&it, i0, i1, 0);
+                elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+            }
+        }
+        return elems;
+    }
+
+    for (int64_t i2 = range->from.i[2]; i2 < range->to.i[2]; i2++) {
+        for (int64_t i1 = range->from.i[1]; i1 < range->to.i[1]; i1++) {
+            for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+                Laik_Index it;
+                laik_index_init(&it, i0, i1, i2);
+                elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
             }
         }
     }
@@ -801,6 +817,7 @@ void laik_mpi_exec(Laik_ActionSeq* as)
     MPI_Datatype dataType = getMPIDataType(tc->data);
     MPI_Status st;
     int err, count;
+    int myrank = tc->transition->group->myid;
 
     // MPI_Request array: not set yet
     int req_count = 0;

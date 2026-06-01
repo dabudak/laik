@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
+#include <unistd.h>
 
 static double prefix_weight_ignore_last(Laik_Index* idx, const void* userData)
 {
@@ -41,6 +42,11 @@ int main(int argc, char* argv[])
     Laik_Instance* inst  = laik_init(&argc, &argv);
     Laik_Group*    world = laik_world(inst);
     int rank = laik_myid(world);
+
+    const char* prof_file = getenv("LAIK_PROFILE_FILE");
+    int do_profile = (prof_file && prof_file[0] != '\0' && rank == 0);
+    if (do_profile)
+        laik_enable_profiling_file(inst, prof_file);
 
     int size = 0;
     if (argc > 1) size = atoi(argv[1]);
@@ -74,10 +80,11 @@ int main(int argc, char* argv[])
         int64_t* rp = NULL; uint64_t rp_len = 0;
         laik_get_map_1d(rowD, 0, (void**)&rp, &rp_len);
         assert(rp_len == size + 1);
+        const int nnz_per_row = 30;
         int64_t off = 0;
         for (int r = 0; r < size; ++r) {
             rp[r] = off;
-            off += r;               // nnz in row r = r
+            off += nnz_per_row;
         }
         rp[size] = off;
     }
@@ -107,11 +114,12 @@ int main(int argc, char* argv[])
         laik_get_map_1d(colD, 0, (void**)&col, &col_len);
         assert((int64_t)val_len == total_nnz && (int64_t)col_len == total_nnz);
 
+        const int nnz_per_row = 30;
         int64_t off = 0;
         for (int64_t r = 0; r < size; ++r) {
-            for (int64_t c = 0; c < r; ++c) {
-                col[off] = c;
-                val[off] = (double)(size - r);
+            for (int k = 0; k < nnz_per_row; ++k) {
+                col[off] = (int64_t)((r + k) % size);
+                val[off] = 1.0;
                 ++off;
             }
         }
@@ -127,22 +135,22 @@ int main(int argc, char* argv[])
                                                                   prefix_weight_ignore_last,
                                                                   0, &last_boundary);
     Laik_Partitioning* row_var_p  = laik_new_partitioning(rows_var_pr, world, prefix_space, 0);
-    laik_switchto_partitioning(rowD, row_var_p, LAIK_DF_Preserve, LAIK_RO_None);
-
     Laik_Partitioner* blk_pr     = laik_new_block_partitioner(0, 1, 0, 0, 0);
     Laik_Partitioning* val_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
     Laik_Partitioning* col_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
+    if (do_profile) {
+        laik_profile_printf("# switch rowD/valD/colD master->distributed\n");
+        laik_reset_profiling(inst);
+    }
+    laik_switchto_partitioning(rowD, row_var_p, LAIK_DF_Preserve, LAIK_RO_None);
     laik_switchto_partitioning(valD, val_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
     laik_switchto_partitioning(colD, col_blk_p, LAIK_DF_Preserve, LAIK_RO_None);
-
+    if (do_profile)
+        laik_writeout_profile();
 
     // 7) Partition result
     Laik_Partitioning* res_blk_p = laik_new_partitioning(blk_pr, world, rows_space, 0);
     laik_switchto_partitioning(resD, res_blk_p, LAIK_DF_None, LAIK_RO_None);
-
-    // 8) SpMV
-    laik_set_phase(inst, 1, "SpMV", NULL);
-    laik_iter_reset(inst);
 
     {
         int mapCount = laik_my_mapcount(res_blk_p);

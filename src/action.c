@@ -1868,17 +1868,34 @@ static uint64_t laik_aseq_sum_elems_for_range(Laik_Mapping* map, Laik_Range* ran
 {
     if (!map || !range) return 0;
     int dims = range->space->dims;
-    Laik_Index it = range->from;
     uint64_t elems = 0;
-    while (!laik_index_isEqual(dims, &it, &(range->to))) {
-        elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
-        it.i[0]++;
-        if (dims > 1 && it.i[0] >= range->to.i[0]) {
-            it.i[0] = range->from.i[0];
-            it.i[1]++;
-            if (dims > 2 && it.i[1] >= range->to.i[1]) {
-                it.i[1] = range->from.i[1];
-                it.i[2]++;
+
+    if (dims == 1) {
+        for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+            Laik_Index it;
+            laik_index_init(&it, i0, 0, 0);
+            elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+        }
+        return elems;
+    }
+
+    if (dims == 2) {
+        for (int64_t i1 = range->from.i[1]; i1 < range->to.i[1]; i1++) {
+            for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+                Laik_Index it;
+                laik_index_init(&it, i0, i1, 0);
+                elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
+            }
+        }
+        return elems;
+    }
+
+    for (int64_t i2 = range->from.i[2]; i2 < range->to.i[2]; i2++) {
+        for (int64_t i1 = range->from.i[1]; i1 < range->to.i[1]; i1++) {
+            for (int64_t i0 = range->from.i[0]; i0 < range->to.i[0]; i0++) {
+                Laik_Index it;
+                laik_index_init(&it, i0, i1, i2);
+                elems += (uint64_t)(map->layout->size)(map->layout, map->layoutSection, &it);
             }
         }
     }

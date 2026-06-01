@@ -4,7 +4,7 @@ OPT=-g
 # settings from 'configure', may overwrite defaults
 -include ../Makefile.config
 
-EXAMPLES = min vsum vsum2 spmv spmv2 \
+EXAMPLES = min vsum vsum2 spmv spmv2 spmv_naive \
     jac1d jac2d jac2d-ser jac3d \
     markov-ser markov markov2 \
     propagation1d propagation2d \
@@ -28,6 +28,8 @@ vsum: vsum.o $(LAIKLIB)
 vsum2: vsum2.o $(LAIKLIB)
 
 spmv: spmv.o $(LAIKLIB)
+
+spmv_naive: spmv_naive.o $(LAIKLIB)
 
 spmv2: $(SDIR)spmv2.c $(LAIKLIB)
 	$(CC) $(CFLAGS) $(OMP_FLAGS) $< $(LAIKLIB) -o $@
